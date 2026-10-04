@@ -132,22 +132,14 @@ final class RecordingController: ObservableObject {
         startTimer()
 
         // Команду на часы шлём только когда стартуем сами (не когда это watch попросил).
+        // Статус соединения с часами отображается через watchConnected badge в UI,
+        // поэтому отсутствие связи не считаем ошибкой — просто шлём в очередь.
         if externalSessionID == nil {
             let connection = WatchConnection.shared
             if connection.isReachable {
-                connection.sendStart(sessionID: id, startedAt: now) { [weak self] ack, _ in
-                    Task { @MainActor in
-                        guard let self else { return }
-                        if !ack {
-                            self.lastError = "Часы не на связи, пишем только с телефона"
-                        }
-                    }
-                }
+                connection.sendStart(sessionID: id, startedAt: now, reply: nil)
             } else if connection.isCompanionInstalled {
                 connection.sendStart(sessionID: id, startedAt: now, reply: nil)
-                self.lastError = "Часы не на связи, пишем только с телефона"
-            } else {
-                self.lastError = "Часы не на связи, пишем только с телефона"
             }
         }
     }

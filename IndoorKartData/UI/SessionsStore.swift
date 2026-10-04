@@ -32,4 +32,11 @@ final class SessionsStore: ObservableObject {
         try? SessionStorage.shared.deleteSession(sessionURL: url)
         items.removeAll { $0.url == url }
     }
+
+    func deleteAll() {
+        for item in items {
+            try? SessionStorage.shared.deleteSession(sessionURL: item.url)
+        }
+        items.removeAll()
+    }
 }

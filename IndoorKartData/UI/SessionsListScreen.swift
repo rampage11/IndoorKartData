@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SessionsListScreen: View {
     @EnvironmentObject var sessionsStore: SessionsStore
+    @State private var showDeleteAllConfirmation = false
 
     var body: some View {
         NavigationStack {
@@ -28,6 +29,30 @@ struct SessionsListScreen: View {
                 }
             }
             .navigationTitle("Сессии")
+            .toolbar {
+                if !sessionsStore.items.isEmpty {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button(role: .destructive) {
+                            showDeleteAllConfirmation = true
+                        } label: {
+                            Image(systemName: "trash")
+                        }
+                        .accessibilityLabel("Очистить все записи")
+                    }
+                }
+            }
+            .confirmationDialog(
+                "Удалить все записи?",
+                isPresented: $showDeleteAllConfirmation,
+                titleVisibility: .visible
+            ) {
+                Button("Удалить \(sessionsStore.items.count)", role: .destructive) {
+                    sessionsStore.deleteAll()
+                }
+                Button("Отмена", role: .cancel) {}
+            } message: {
+                Text("Это действие нельзя отменить. Файлы сессий будут удалены с устройства.")
+            }
             .refreshable {
                 sessionsStore.reload()
             }
