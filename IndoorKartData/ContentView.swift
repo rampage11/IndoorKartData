@@ -1,18 +1,23 @@
 import SwiftUI
 
 struct ContentView: View {
+    @StateObject private var recorder = RecordingController()
+    @StateObject private var sessionsStore = SessionsStore()
+
     var body: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "flag.checkered.2.crossed")
-                .font(.system(size: 60))
-                .foregroundStyle(.tint)
-            Text("IndoorKart Data")
-                .font(.title2.weight(.semibold))
-            Text("Scaffolding ready")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
+        TabView {
+            RecordScreen()
+                .tabItem {
+                    Label("Запись", systemImage: "record.circle")
+                }
+
+            SessionsListScreen()
+                .tabItem {
+                    Label("Сессии", systemImage: "list.bullet.rectangle")
+                }
         }
-        .padding()
+        .environmentObject(recorder)
+        .environmentObject(sessionsStore)
     }
 }
 
