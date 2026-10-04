@@ -1,10 +1,12 @@
 import SwiftUI
 
 struct WatchContentView: View {
-    @StateObject private var controller = WatchRecordingController()
+    @EnvironmentObject private var controller: WatchRecordingController
 
     var body: some View {
         VStack(spacing: 8) {
+            phoneStatusBadge
+
             Text(formattedElapsed(controller.elapsedSeconds))
                 .font(.system(.title2, design: .monospaced).weight(.semibold))
                 .foregroundStyle(controller.isRecording ? .red : .primary)
@@ -38,6 +40,16 @@ struct WatchContentView: View {
             }
         }
         .padding(.horizontal, 4)
+        .animation(.easeInOut(duration: 0.2), value: controller.phoneConnected)
+    }
+
+    private var phoneStatusBadge: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "iphone.gen3")
+            Text(controller.phoneConnected ? "на связи" : "нет связи")
+        }
+        .font(.caption2.weight(.medium))
+        .foregroundStyle(controller.phoneConnected ? Color.green : Color.secondary)
     }
 
     private func toggle() {
@@ -58,4 +70,5 @@ struct WatchContentView: View {
 
 #Preview {
     WatchContentView()
+        .environmentObject(WatchRecordingController())
 }

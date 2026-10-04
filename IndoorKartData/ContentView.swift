@@ -1,9 +1,6 @@
 import SwiftUI
 
 struct ContentView: View {
-    @StateObject private var recorder = RecordingController()
-    @StateObject private var sessionsStore = SessionsStore()
-
     var body: some View {
         TabView {
             RecordScreen()
@@ -16,11 +13,11 @@ struct ContentView: View {
                     Label("Сессии", systemImage: "list.bullet.rectangle")
                 }
         }
-        .environmentObject(recorder)
-        .environmentObject(sessionsStore)
     }
 }
 
 #Preview {
     ContentView()
+        .environmentObject(RecordingController())
+        .environmentObject(SessionsStore())
 }

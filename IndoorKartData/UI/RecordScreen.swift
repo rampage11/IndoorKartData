@@ -10,6 +10,9 @@ struct RecordScreen: View {
                 errorBanner(error)
             }
 
+            watchStatusBadge
+                .padding(.top, 12)
+
             Spacer()
 
             recordButton
@@ -33,6 +36,20 @@ struct RecordScreen: View {
         .background(Color(.systemBackground))
         .animation(.easeInOut(duration: 0.2), value: recorder.isRecording)
         .animation(.easeInOut(duration: 0.2), value: recorder.lastError)
+        .animation(.easeInOut(duration: 0.2), value: recorder.watchConnected)
+    }
+
+    private var watchStatusBadge: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "applewatch")
+            Text(recorder.watchConnected ? "Часы: на связи" : "Часы: не на связи")
+        }
+        .font(.caption.weight(.medium))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(.ultraThinMaterial, in: Capsule())
+        .foregroundStyle(recorder.watchConnected ? Color.green : Color.secondary)
+        .accessibilityLabel(recorder.watchConnected ? "Apple Watch на связи" : "Apple Watch не на связи")
     }
 
     private var recordButton: some View {
