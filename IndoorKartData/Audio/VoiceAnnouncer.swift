@@ -28,11 +28,9 @@ final class VoiceAnnouncer {
 
     static func phrase(for ms: Int) -> String {
         let totalMs = max(0, ms)
-        // Округляем до десятых: 42,150 → 42,2; 42,999 → 43,0.
-        let tenthsTotal = Int((Double(totalMs) / 100.0).rounded())
-        let seconds = tenthsTotal / 10
-        let tenths = tenthsTotal % 10
-        // "33 и 1" — TTS прочитает как "тридцать три и один" (короче и в шлеме разборчивее).
+        // Обрезаем до десятых (не округляем): 42,150 → 42,1; 42,999 → 42,9.
+        let seconds = totalMs / 1000
+        let tenths = (totalMs % 1000) / 100
         return "\(seconds) и \(tenths)"
     }
 }
