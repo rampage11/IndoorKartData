@@ -177,8 +177,11 @@ final class WatchRecordingController: NSObject, ObservableObject {
         let now = motion.timestamp
         if let last = steeringLastSampleTs {
             let dt = now - last
-            // rotationRate.y ≈ скорость пронации/супинации кисти.
-            steeringAccumRad += motion.rotationRate.y * dt
+            // На тестовой сессии ось X доминирует (std 1.94 vs 0.53 у Y),
+            // и интеграл возвращается в ноль между движениями «туда-обратно» —
+            // значит именно X ловит реальный поворот запястья для этого ношения
+            // часов. Если ощущения не те — поменять на rotationRate.y или z.
+            steeringAccumRad += motion.rotationRate.x * dt
         }
         steeringLastSampleTs = now
         steeringSampleCounter += 1
