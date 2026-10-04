@@ -37,6 +37,16 @@ struct RecordScreen: View {
         .animation(.easeInOut(duration: 0.2), value: recorder.isRecording)
         .animation(.easeInOut(duration: 0.2), value: recorder.lastError)
         .animation(.easeInOut(duration: 0.2), value: recorder.watchConnected)
+        .onAppear {
+            // На экране Записи ждём момента нажать Старт — не даём системе
+            // усыпить телефон. На других вкладках auto-lock работает штатно.
+            UIApplication.shared.isIdleTimerDisabled = true
+        }
+        .onDisappear {
+            if !recorder.isRecording {
+                UIApplication.shared.isIdleTimerDisabled = false
+            }
+        }
     }
 
     private var watchStatusBadge: some View {
