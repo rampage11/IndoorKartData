@@ -3,6 +3,7 @@ import SwiftUI
 struct RecordScreen: View {
     @EnvironmentObject var recorder: RecordingController
     @EnvironmentObject var sessionsStore: SessionsStore
+    @ObservedObject private var timing = TimingClient.shared
 
     var body: some View {
         VStack(spacing: 0) {
@@ -15,6 +16,9 @@ struct RecordScreen: View {
                 voiceToggleBadge
             }
             .padding(.top, 12)
+
+            timingDebugOverlay
+                .padding(.top, 6)
 
             Spacer()
 
@@ -77,6 +81,34 @@ struct RecordScreen: View {
                 .foregroundStyle(.secondary)
         }
         .accessibilityLabel("Виртуальный руль")
+    }
+
+    private var timingDebugOverlay: some View {
+        VStack(spacing: 2) {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(timing.isConnected ? Color.green : Color.gray)
+                    .frame(width: 6, height: 6)
+                Text("Timing: \(timing.connectionState)")
+            }
+            HStack(spacing: 10) {
+                Text("карт: \(recorder.kartNumber > 0 ? "\(recorder.kartNumber)" : "—")")
+                Text("круг: \(timing.lapCount.map { "\($0)" } ?? "—")")
+                Text("флаг: \(timing.currentFlag ?? "—")")
+            }
+            if let race = timing.currentRaceID {
+                Text("race: \(race.prefix(8))")
+            }
+            if let last = timing.lastLapMs {
+                let m = (last / 1000) / 60
+                let s = (last / 1000) % 60
+                let mm = last % 1000
+                Text(String(format: "last lap: %02d:%02d.%03d", m, s, mm))
+                    .foregroundStyle(.primary)
+            }
+        }
+        .font(.caption2.monospaced())
+        .foregroundStyle(.secondary)
     }
 
     private var voiceToggleBadge: some View {

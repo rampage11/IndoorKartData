@@ -52,6 +52,8 @@ final class TimingClient: ObservableObject {
 
     private var client: SignalRClient?
     private let logger = Logger(subsystem: "com.indoorkartdata.app", category: "TimingClient")
+    private var raceRefreshTask: Task<Void, Never>?
+    private var subscribedRaceID: String?
 
     nonisolated init() {}
 
@@ -71,6 +73,7 @@ final class TimingClient: ObservableObject {
             // Автоподписка: без этого вызова сервер шлёт только heartbeat.
             // handler lastRaceId вызовет SubscribeRace с правильным ID.
             await fetchCurrentRaceAndSubscribe()
+            startRaceRefreshLoop()
         } catch {
             logger.error("TimingClient connect failed: \(error.localizedDescription, privacy: .public)")
             isConnected = false
@@ -79,10 +82,28 @@ final class TimingClient: ObservableObject {
     }
 
     func disconnect() {
+        raceRefreshTask?.cancel()
+        raceRefreshTask = nil
+        subscribedRaceID = nil
         client?.disconnect()
         client = nil
         isConnected = false
         connectionState = "disconnected"
+    }
+
+    // Маршаллы иногда ресетают сессию прямо во время заезда. Периодически
+    // опрашиваем GetLastRaceId — если ID сменился, handler lastRaceId
+    // переподписывает нас на новый заезд.
+    private func startRaceRefreshLoop() {
+        raceRefreshTask?.cancel()
+        raceRefreshTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 10_000_000_000)
+                if Task.isCancelled { return }
+                guard let self else { return }
+                await self.fetchCurrentRaceAndSubscribe()
+            }
+        }
     }
 
     func fetchCurrentRaceAndSubscribe() async {
@@ -126,9 +147,18 @@ final class TimingClient: ObservableObject {
         case "lastRaceId":
             guard let arg0 = call.A.first else { return }
             if let payload = decode(LastRaceIdPayload.self, from: arg0) {
-                currentRaceID = payload.id
-                Task { [weak self, raceID = payload.id] in
-                    await self?.subscribe(raceID: raceID)
+                let newID = payload.id
+                if subscribedRaceID == newID {
+                    // Тот же заезд — ничего не делаем.
+                    return
+                }
+                let old = subscribedRaceID
+                currentRaceID = newID
+                // Маршаллы сбросили сессию — старые метки больше не актуальны.
+                resetMySelfState()
+                Task { [weak self, oldID = old, newID] in
+                    if let oldID { await self?.unsubscribe(raceID: oldID) }
+                    await self?.subscribe(raceID: newID)
                 }
             }
         case "monitorSettings", "allMonitorMessages":
@@ -187,11 +217,15 @@ final class TimingClient: ObservableObject {
         if comp.rn == kartTrimmed { return true }
         if comp.nn == kartTrimmed { return true }
         // Сервер зачастую зануляет rn/nn до 2 цифр, а пользователь может ввести "6" вместо "06".
-        if let rn = comp.rn, Int(rn) != nil, Int(kartTrimmed) == Int(rn) { return true }
-        if let nn = comp.nn, Int(nn) != nil, Int(kartTrimmed) == Int(nn) { return true }
+        let kartInt = Int(kartTrimmed)
+        if let rn = comp.rn, let r = Int(rn), r == kartInt { return true }
+        if let nn = comp.nn, let n = Int(nn), n == kartInt { return true }
         if let fn = comp.fn {
-            if fn.caseInsensitiveCompare("KART \(kartTrimmed)") == .orderedSame { return true }
-            if let kartNum = Int(kartTrimmed), fn.caseInsensitiveCompare("KART \(kartNum)") == .orderedSame { return true }
+            // На MIKS fn выглядит как "KINDER 29" или "KART 14" — префикс
+            // модели карта варьируется между парками. Берём последний токен.
+            let last = fn.split(separator: " ").last.map(String.init)
+            if last == kartTrimmed { return true }
+            if let last, let l = Int(last), l == kartInt { return true }
         }
         return false
     }
@@ -200,8 +234,18 @@ final class TimingClient: ObservableObject {
         guard let client else { return }
         do {
             _ = try await client.invoke(method: "SubscribeRace", args: [AnyCodable(raceID)])
+            await MainActor.run { self.subscribedRaceID = raceID }
         } catch {
             logger.error("SubscribeRace failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func unsubscribe(raceID: String) async {
+        guard let client else { return }
+        do {
+            _ = try await client.invoke(method: "UnsubscribeRace", args: [AnyCodable(raceID)])
+        } catch {
+            logger.error("UnsubscribeRace failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 
