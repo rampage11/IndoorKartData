@@ -20,6 +20,7 @@ final class RecordingController: ObservableObject {
     #if os(iOS)
     private let imuRecorder = IMURecorder()
     private let audioRecorder = AudioRecorder()
+    private let timingRecorder = TimingRecorder()
     private var watchFilesReceived: Set<String> = []
     private var watchIMUSampleCount: Int?
     private var heartRateSampleCount: Int?
@@ -170,7 +171,9 @@ final class RecordingController: ObservableObject {
         self.watchIMUSampleCount = nil
         self.heartRateSampleCount = nil
 
-        // Поднимаем SignalR-соединение к RaceMann если номер карта задан.
+        // Поднимаем SignalR-соединение к RaceMann если номер карта задан,
+        // и запускаем сбор timing-ивентов в session dir.
+        timingRecorder.start(sessionURL: sessionURL)
         if kartNumber > 0 {
             Task { await TimingClient.shared.connect() }
         }
@@ -207,6 +210,9 @@ final class RecordingController: ObservableObject {
         }
 
         let endedAt = Date()
+        // Финализируем timing-артефакт ДО manifest, чтобы файл был на диске
+        // когда сканер директории включает его в sources.
+        timingRecorder.finalize()
         if let url = sessionURL, let id = currentSessionID, let started = startedAt {
             if !audioStarted {
                 let audioURL = url.appendingPathComponent("iphone_audio.wav")
@@ -306,6 +312,17 @@ final class RecordingController: ObservableObject {
                 sampleCount: heartRateSampleCount,
                 sampleRateHz: nil,
                 format: "hr_v1"
+            ))
+        }
+        let timingURL = sessionURL.appendingPathComponent("timing.json")
+        if fm.fileExists(atPath: timingURL.path),
+           !sources.contains(where: { $0.filename == "timing.json" }) {
+            sources.append(DataSourceEntry(
+                kind: .timing,
+                filename: "timing.json",
+                sampleCount: nil,
+                sampleRateHz: nil,
+                format: "timing_v1"
             ))
         }
     }

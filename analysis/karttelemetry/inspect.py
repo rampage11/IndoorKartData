@@ -61,6 +61,26 @@ def _print_summary(session_dir: Path, session: dict[str, Any]) -> None:
     if orphans:
         print(f"note: {len(orphans)} file(s) on disk не упомянуты в manifest — грузим напрямую.")
 
+    timing = session.get("timing")
+    if timing:
+        laps = timing.get("laps", [])
+        flags = timing.get("flags", [])
+        kart = timing.get("kartNumber") or "?"
+        race_id = (timing.get("raceID") or "")[:8]
+        print(f"timing: race={race_id} kart={kart}  laps={len(laps)}  flags={len(flags)}")
+        if laps:
+            # Форматируем как MM:SS.mmm — лучший круг выделяем звёздочкой.
+            best_ms = min(l["lapMs"] for l in laps if l.get("lapMs"))
+            for lap in laps:
+                ms = lap.get("lapMs", 0)
+                m, s_ms = divmod(ms, 1000)
+                mm, s = divmod(m, 60)
+                mark = " *" if ms == best_ms else "  "
+                print(
+                    f"  lap {lap.get('lapNumber','?'):>3} "
+                    f"{mm:02d}:{s:02d}.{s_ms:03d}{mark}  pos={lap.get('position','?')}"
+                )
+
     if session.get("_errors"):
         print("warnings:")
         for e in session["_errors"]:

@@ -5,6 +5,7 @@ enum DataSourceKind: String, Codable {
     case iPhoneAudio = "iphone_audio"
     case watchIMU = "watch_imu"
     case heartRate = "heart_rate"
+    case timing = "timing"
 }
 
 struct DataSourceEntry: Codable {

@@ -70,11 +70,17 @@ def load_audio(path: Path) -> tuple[int, np.ndarray]:
     return int(samplerate), np.asarray(data)
 
 
+def load_timing(path: Path) -> dict[str, Any]:
+    """Load timing.json artifact with lap/flag events from RaceMann."""
+    with Path(path).open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
 def load_session(session_dir: Path, *, load_audio_data: bool = True) -> dict[str, Any]:
     """Load everything available in a session directory.
 
     Returns a dict with keys: 'session_dir', 'manifest', 'iphone_imu',
-    'watch_imu', 'heart_rate', 'audio' (any of which may be None/missing).
+    'watch_imu', 'heart_rate', 'audio', 'timing' (any may be None).
     If `load_audio_data` is False, audio is skipped even if present.
 
     Файлы определяются по имени на диске, не по manifest — на iOS бывает,
@@ -90,6 +96,7 @@ def load_session(session_dir: Path, *, load_audio_data: bool = True) -> dict[str
         "watch_imu": None,
         "heart_rate": None,
         "audio": None,
+        "timing": None,
     }
 
     # Фиксированные имена файлов → (ключ в out, функция-загрузчик)
@@ -116,5 +123,13 @@ def load_session(session_dir: Path, *, load_audio_data: bool = True) -> dict[str
         except Exception as e:  # noqa: BLE001
             out["audio"] = None
             out.setdefault("_errors", []).append(f"audio: {e}")
+
+    timing_path = session_dir / "timing.json"
+    if timing_path.exists():
+        try:
+            out["timing"] = load_timing(timing_path)
+        except Exception as e:  # noqa: BLE001
+            out["timing"] = None
+            out.setdefault("_errors", []).append(f"timing: {e}")
 
     return out
