@@ -28,9 +28,11 @@ final class VoiceAnnouncer {
 
     static func phrase(for ms: Int) -> String {
         let totalMs = max(0, ms)
-        let seconds = totalMs / 1000
-        let fraction = totalMs % 1000
-        // Запятая — русская десятичная; iOS TTS читает "42,007" как "сорок две запятая ноль ноль семь".
-        return String(format: "%d,%03d", seconds, fraction)
+        // Округляем до десятых: 42,150 → 42,2; 42,999 → 43,0.
+        let tenthsTotal = Int((Double(totalMs) / 100.0).rounded())
+        let seconds = tenthsTotal / 10
+        let tenths = tenthsTotal % 10
+        // "33 и 1" — TTS прочитает как "тридцать три и один" (короче и в шлеме разборчивее).
+        return "\(seconds) и \(tenths)"
     }
 }
