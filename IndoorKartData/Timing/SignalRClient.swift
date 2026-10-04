@@ -166,13 +166,13 @@ final class SignalRClient: NSObject {
     private func start(token: String) async throws {
         var comps = URLComponents(url: config.baseURL.appendingPathComponent("signalr/start"),
                                   resolvingAgainstBaseURL: false)!
-        comps.queryItems = [
-            URLQueryItem(name: "transport", value: "webSockets"),
-            URLQueryItem(name: "clientProtocol", value: config.clientProtocol),
-            URLQueryItem(name: "connectionToken", value: token),
-            URLQueryItem(name: "connectionData", value: connectionDataJSON()),
-            URLQueryItem(name: "_", value: String(Int(Date().timeIntervalSince1970 * 1000)))
-        ]
+        comps.percentEncodedQuery = Self.encodeQuery([
+            "transport": "webSockets",
+            "clientProtocol": config.clientProtocol,
+            "connectionToken": token,
+            "connectionData": connectionDataJSON(),
+            "_": String(Int(Date().timeIntervalSince1970 * 1000))
+        ])
         var req = URLRequest(url: comps.url!)
         req.httpMethod = "GET"
         req.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -200,13 +200,17 @@ final class SignalRClient: NSObject {
         default: break
         }
         comps.path = "/signalr/connect"
-        comps.queryItems = [
-            URLQueryItem(name: "transport", value: "webSockets"),
-            URLQueryItem(name: "clientProtocol", value: config.clientProtocol),
-            URLQueryItem(name: "connectionToken", value: token),
-            URLQueryItem(name: "connectionData", value: connectionDataJSON()),
-            URLQueryItem(name: "tid", value: String(Int.random(in: 0...10)))
-        ]
+        // Руками формируем percentEncodedQuery — URLQueryItem по умолчанию
+        // не эскейпит '+' и '/', а SignalR connectionToken содержит именно
+        // эти символы (base64). Сервер интерпретирует '+' как пробел и
+        // возвращает невалидный ответ при WS handshake.
+        comps.percentEncodedQuery = Self.encodeQuery([
+            "transport": "webSockets",
+            "clientProtocol": config.clientProtocol,
+            "connectionToken": token,
+            "connectionData": connectionDataJSON(),
+            "tid": String(Int.random(in: 0...10))
+        ])
         guard let url = comps.url else {
             throw ClientError.transport(NSError(domain: "SignalR", code: -3))
         }
@@ -273,6 +277,21 @@ final class SignalRClient: NSObject {
         // Руками кодируем, чтобы гарантировать совместимость с .NET SignalR сервером:
         // он парсит именно вид [{"name":"<hub>"}], пробелы недопустимы.
         return "[{\"name\":\"\(config.hub)\"}]"
+    }
+
+    // Процент-кодируем значения RFC 3986-way: включая '+' и '/' которые URLQueryItem
+    // по умолчанию оставляет литеральными. SignalR connectionToken это base64 с '+' и '/',
+    // сервер без эскейпа интерпретирует '+' как пробел.
+    static func encodeQuery(_ params: [String: String]) -> String {
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.remove(charactersIn: "+/=&?#")
+        return params
+            .map { (k, v) -> String in
+                let kEnc = k.addingPercentEncoding(withAllowedCharacters: allowed) ?? k
+                let vEnc = v.addingPercentEncoding(withAllowedCharacters: allowed) ?? v
+                return "\(kEnc)=\(vEnc)"
+            }
+            .joined(separator: "&")
     }
 }
 
