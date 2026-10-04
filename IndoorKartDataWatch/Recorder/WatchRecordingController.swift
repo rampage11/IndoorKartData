@@ -43,12 +43,20 @@ final class WatchRecordingController: NSObject, ObservableObject {
     private var timer: Timer?
     private var startedByPhone: Bool = false
 
-    // Для живого стрима руля: интегрируем rotationRate.y (твист запястья) и
+    // Для живого стрима руля: интегрируем rotationRate.x (твист запястья) и
     // раз в N семплов отправляем на iPhone.
     private var steeringAccumRad: Double = 0
     private var steeringLastSampleTs: TimeInterval?
     private var steeringSampleCounter: Int = 0
     private let steeringDownsample: Int = 5  // 100Hz → 20Hz
+
+    // Антидрейф: собираем первую секунду семплов в неподвижном положении
+    // чтобы вычислить bias гироскопа и вычитать его из последующих семплов.
+    private var steeringBiasSamples: [Double] = []
+    private var steeringBias: Double = 0
+    private let steeringBiasWindow: Int = 100  // ~1 сек при 100Гц
+    // Мёртвая зона в rad/s: шум ниже этого порога (~1.1°/с) не копим.
+    private let steeringDeadZone: Double = 0.02
 
     override init() {
         self.kartNumber = UserDefaults.standard.integer(forKey: Self.kartNumberKey)
@@ -169,10 +177,12 @@ final class WatchRecordingController: NSObject, ObservableObject {
             self?.currentBPM = bpm
         }
 
-        // Сбрасываем интегратор руля на нуле.
+        // Сбрасываем интегратор руля на нуле и чистим калибровку bias.
         steeringAccumRad = 0
         steeringLastSampleTs = nil
         steeringSampleCounter = 0
+        steeringBiasSamples = []
+        steeringBias = 0
         imuRecorder.onLiveSample = { [weak self] motion in
             self?.processLiveSample(motion)
         }
@@ -206,13 +216,25 @@ final class WatchRecordingController: NSObject, ObservableObject {
     private func integrateAndMaybeSendSteering(_ motion: CMDeviceMotion) {
         guard isRecording else { return }
         let now = motion.timestamp
+        let rate = motion.rotationRate.x
+
+        // Фаза калибровки bias: первые ~1 сек просто копим семплы, не крутим руль.
+        if steeringBiasSamples.count < steeringBiasWindow {
+            steeringBiasSamples.append(rate)
+            if steeringBiasSamples.count == steeringBiasWindow {
+                steeringBias = steeringBiasSamples.reduce(0, +) / Double(steeringBiasWindow)
+            }
+            steeringLastSampleTs = now
+            return
+        }
+
+        // Основная ветка: вычитаем bias и игнорируем шум в мёртвой зоне.
+        let adjusted = rate - steeringBias
         if let last = steeringLastSampleTs {
             let dt = now - last
-            // На тестовой сессии ось X доминирует (std 1.94 vs 0.53 у Y),
-            // и интеграл возвращается в ноль между движениями «туда-обратно» —
-            // значит именно X ловит реальный поворот запястья для этого ношения
-            // часов. Если ощущения не те — поменять на rotationRate.y или z.
-            steeringAccumRad += motion.rotationRate.x * dt
+            if abs(adjusted) > steeringDeadZone {
+                steeringAccumRad += adjusted * dt
+            }
         }
         steeringLastSampleTs = now
         steeringSampleCounter += 1
