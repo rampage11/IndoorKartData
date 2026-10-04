@@ -64,7 +64,7 @@ struct RecordScreen: View {
                 Image(systemName: "steeringwheel")
                     .font(.system(size: 100, weight: .regular))
                     .foregroundStyle(.primary)
-                    .rotationEffect(.radians(-recorder.steeringAngleRadians))
+                    .rotationEffect(.radians(recorder.steeringAngleRadians))
                     .animation(.linear(duration: 0.05), value: recorder.steeringAngleRadians)
                 // Метка «12 часов» в вершине круга — глазу легче заметить поворот.
                 Circle()

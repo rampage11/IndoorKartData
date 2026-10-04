@@ -68,6 +68,9 @@ final class TimingClient: ObservableObject {
             try await c.connect()
             isConnected = true
             connectionState = "connected"
+            // Автоподписка: без этого вызова сервер шлёт только heartbeat.
+            // handler lastRaceId вызовет SubscribeRace с правильным ID.
+            await fetchCurrentRaceAndSubscribe()
         } catch {
             logger.error("TimingClient connect failed: \(error.localizedDescription, privacy: .public)")
             isConnected = false
