@@ -48,12 +48,14 @@ final class SignalRClient: NSObject {
     // MARK: - State
 
     private let config: Config
-    private let session: URLSession
+    private var session: URLSession!
     private let logger = Logger(subsystem: "com.indoorkartdata.app", category: "SignalRClient")
 
     private var ws: URLSessionWebSocketTask?
     private var receiveTask: Task<Void, Never>?
     private var connectionToken: String?
+    // Ждём пока сервер завершит WS upgrade прежде чем звать /signalr/start.
+    private var openContinuation: CheckedContinuation<Void, Error>?
 
     private var nextInvokeID: Int = 1
     private let invokeLock = NSLock()
@@ -62,9 +64,16 @@ final class SignalRClient: NSObject {
         didSet { onStateChange?(isConnected ? "connected" : "disconnected", isConnected) }
     }
 
-    init(config: Config, session: URLSession = .shared) {
+    override init() {
+        self.config = Config(baseURL: URL(string: "about:blank")!, hub: "")
+        super.init()
+    }
+
+    init(config: Config) {
         self.config = config
-        self.session = session
+        super.init()
+        let configuration = URLSessionConfiguration.default
+        self.session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
     }
 
     // MARK: - Public API
@@ -80,12 +89,21 @@ final class SignalRClient: NSObject {
 
         onStateChange?("connecting", false)
         try openWebSocket(token: negotiate.ConnectionToken)
+        // Ждём пока сервер завершит WS handshake (urlSession:webSocketTask:didOpenWithProtocol:).
+        // Без этого /signalr/start приходит до того как токен привязан к WS и возвращает 400.
+        try await waitForOpen()
         startReceiveLoop()
 
         onStateChange?("starting", false)
         try await start(token: negotiate.ConnectionToken)
 
         isConnected = true
+    }
+
+    private func waitForOpen() async throws {
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            self.openContinuation = cont
+        }
     }
 
     func disconnect() {
@@ -255,5 +273,33 @@ final class SignalRClient: NSObject {
         // Руками кодируем, чтобы гарантировать совместимость с .NET SignalR сервером:
         // он парсит именно вид [{"name":"<hub>"}], пробелы недопустимы.
         return "[{\"name\":\"\(config.hub)\"}]"
+    }
+}
+
+extension SignalRClient: URLSessionWebSocketDelegate {
+    func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
+        // WS handshake завершён — теперь можно звать /signalr/start.
+        if let cont = openContinuation {
+            openContinuation = nil
+            cont.resume()
+        }
+    }
+
+    func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
+        if let cont = openContinuation {
+            openContinuation = nil
+            cont.resume(throwing: ClientError.transport(NSError(domain: "SignalR", code: Int(closeCode.rawValue), userInfo: [NSLocalizedDescriptionKey: "WS закрылся до handshake (code \(closeCode.rawValue))"])))
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let cont = openContinuation {
+            openContinuation = nil
+            if let error {
+                cont.resume(throwing: ClientError.transport(error))
+            } else {
+                cont.resume(throwing: ClientError.transport(NSError(domain: "SignalR", code: -1, userInfo: [NSLocalizedDescriptionKey: "WS task завершилось без ошибки до handshake"])))
+            }
+        }
     }
 }
