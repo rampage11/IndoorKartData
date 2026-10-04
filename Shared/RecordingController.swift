@@ -87,7 +87,7 @@ final class RecordingController: ObservableObject {
                 guard let self else { return }
                 Task { @MainActor in
                     if self.voiceEnabled {
-                        self.voiceAnnouncer.announceLap(ms: ms, lapNumber: TimingClient.shared.lapCount)
+                        self.voiceAnnouncer.announceLap(ms: ms)
                     }
                 }
             }
