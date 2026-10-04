@@ -15,11 +15,20 @@ final class AudioRecorder {
     var sampleRateHz: Double { 44_100.0 }
     var currentFrameCount: Int { Int(frameCount) }
 
-    enum AudioError: Error {
+    enum AudioError: LocalizedError {
         case permissionDenied
         case formatUnavailable
         case fileCreationFailed
         case engineStartFailed
+
+        var errorDescription: String? {
+            switch self {
+            case .permissionDenied: return "доступ к микрофону не разрешён"
+            case .formatUnavailable: return "неподдерживаемый формат входа"
+            case .fileCreationFailed: return "не удалось создать WAV-файл"
+            case .engineStartFailed: return "аудиодвижок не стартовал (iOS не отдал микрофон)"
+            }
+        }
     }
 
     static func requestPermission() async -> Bool {
@@ -87,11 +96,25 @@ final class AudioRecorder {
         }
 
         engine.prepare()
-        do {
-            try engine.start()
-        } catch {
+        // iOS Audio HAL после background-wake часто не готов с первой попытки.
+        // Делаем до 4 попыток с короткими паузами (суммарно до ~1 секунды).
+        var startError: Error?
+        for attempt in 0..<4 {
+            do {
+                try engine.start()
+                startError = nil
+                break
+            } catch {
+                startError = error
+                if attempt < 3 {
+                    usleep(250_000)
+                }
+            }
+        }
+        if startError != nil {
             input.removeTap(onBus: 0)
             self.audioFile = nil
+            try? session.setActive(false, options: [.notifyOthersOnDeactivation])
             throw AudioError.engineStartFailed
         }
         running = true

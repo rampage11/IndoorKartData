@@ -22,6 +22,7 @@ final class RecordingController: ObservableObject {
     private var watchFilesReceived: Set<String> = []
     private var watchIMUSampleCount: Int?
     private var heartRateSampleCount: Int?
+    private var audioStarted: Bool = false
     #endif
 
     init() {
@@ -110,14 +111,14 @@ final class RecordingController: ObservableObject {
             return
         }
 
+        // Audio опционален: если iOS не отдал микрофон (background-cold start),
+        // пишем сессию без аудио — IMU и часы всё равно соберут полезное.
+        self.audioStarted = false
         do {
             try audioRecorder.start(fileURL: audioURL)
+            self.audioStarted = true
         } catch {
-            // Откатываем IMU, иначе он останется включённым без аудио-пары.
-            imuRecorder.stop { _ in }
-            self.lastError = "Аудио не стартовало: \(error.localizedDescription)"
-            try? FileManager.default.removeItem(at: sessionURL)
-            return
+            self.lastError = "Аудио не стартовало: \(error.localizedDescription). Пишу без звука."
         }
 
         self.sessionURL = sessionURL
@@ -168,10 +169,14 @@ final class RecordingController: ObservableObject {
                 startedAt: started,
                 endedAt: endedAt,
                 imuSampleCount: imuCount,
-                audioFrameCount: audioFrames,
+                audioFrameCount: audioStarted ? audioFrames : nil,
                 includeWatch: watchFilesReceived.contains("watch_imu.bin"),
                 includeHR: watchFilesReceived.contains("heart_rate.bin")
             )
+            if !audioStarted {
+                let audioURL = url.appendingPathComponent("iphone_audio.wav")
+                try? FileManager.default.removeItem(at: audioURL)
+            }
         }
 
         UIApplication.shared.isIdleTimerDisabled = false
@@ -186,7 +191,7 @@ final class RecordingController: ObservableObject {
         startedAt: Date,
         endedAt: Date,
         imuSampleCount: Int,
-        audioFrameCount: Int,
+        audioFrameCount: Int?,
         includeWatch: Bool,
         includeHR: Bool
     ) {
@@ -201,15 +206,17 @@ final class RecordingController: ObservableObject {
                 sampleCount: imuSampleCount,
                 sampleRateHz: 100.0,
                 format: "imu_v1"
-            ),
-            DataSourceEntry(
+            )
+        ]
+        if let audioFrameCount {
+            sources.append(DataSourceEntry(
                 kind: .iPhoneAudio,
                 filename: "iphone_audio.wav",
                 sampleCount: audioFrameCount,
                 sampleRateHz: 44_100.0,
                 format: "wav_pcm16_44100_mono"
-            )
-        ]
+            ))
+        }
 
         if includeWatch {
             sources.append(DataSourceEntry(
