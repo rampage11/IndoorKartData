@@ -25,6 +25,12 @@ final class TimingClient: ObservableObject {
     @Published private(set) var position: Int?
     @Published private(set) var gapToLeaderMs: Int?
 
+    // Диагностика: счётчики входящих событий. Помогает различить где застряло.
+    @Published private(set) var heartbeatCount: Int = 0
+    @Published private(set) var compCount: Int = 0
+    @Published private(set) var compMineCount: Int = 0
+    @Published private(set) var lastCompKartSeen: String?
+
     struct LapEvent: Identifiable {
         let id = UUID()
         let raceTimeMs: Int
@@ -171,12 +177,18 @@ final class TimingClient: ObservableObject {
     private func dispatchNewCommand(_ env: NewCommandEnvelope) {
         switch env.Method {
         case "hb":
+            heartbeatCount += 1
             if let hb = decode(HeartbeatCommand.self, from: env.Command) {
                 if let fl = hb.fl { currentFlag = fl }
                 if let tg = hb.tg { timeToGoMs = tg }
             }
         case "Comp":
+            compCount += 1
             if let comp = decode(CompetitorCommand.self, from: env.Command) {
+                // Запоминаем номер последнего карта который видели — помогает
+                // понять правильный ли формат (KART/KINDER/etc) и не ошибся
+                // ли пилот с номером.
+                lastCompKartSeen = comp.rn ?? comp.nn ?? comp.fn
                 applyCompetitorIfMatches(comp, raceTimeMs: env.Time)
             }
         default:
@@ -187,6 +199,7 @@ final class TimingClient: ObservableObject {
     private func applyCompetitorIfMatches(_ comp: CompetitorCommand, raceTimeMs: Int) {
         guard let kart = kartNumber, !kart.isEmpty else { return }
         if !isOurKart(comp, kart: kart) { return }
+        compMineCount += 1
 
         if let ll = comp.ll { lastLapMs = ll }
         if let bl = comp.bl { bestLapMs = bl }

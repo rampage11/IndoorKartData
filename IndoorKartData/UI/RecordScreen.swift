@@ -96,6 +96,14 @@ struct RecordScreen: View {
                 Text("круг: \(timing.lapCount.map { "\($0)" } ?? "—")")
                 Text("флаг: \(timing.currentFlag ?? "—")")
             }
+            HStack(spacing: 10) {
+                Text("hb: \(timing.heartbeatCount)")
+                Text("comp: \(timing.compCount)")
+                Text("мой: \(timing.compMineCount)")
+            }
+            if let seen = timing.lastCompKartSeen {
+                Text("виден: \(seen)")
+            }
             if let race = timing.currentRaceID {
                 Text("race: \(race.prefix(8))")
             }
