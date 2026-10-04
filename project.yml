@@ -23,9 +23,8 @@ targets:
     sources:
       - path: IndoorKartData
       - path: Shared
-    # dependencies:
-    #   - target: IndoorKartDataWatch
-    # Раскомментировать после установки watchOS 26.5 platform (Xcode > Settings > Components)
+    dependencies:
+      - target: IndoorKartDataWatch
     info:
       path: IndoorKartData/Info.plist
       properties:
