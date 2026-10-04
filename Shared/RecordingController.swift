@@ -24,16 +24,55 @@ final class RecordingController: ObservableObject {
     private var watchIMUSampleCount: Int?
     private var heartRateSampleCount: Int?
     private var audioStarted: Bool = false
+
+    // Номер карта. 0 = не задан. Храним в UserDefaults, синкаем с часами
+    // через applicationContext.
+    @Published var kartNumber: Int {
+        didSet {
+            UserDefaults.standard.set(kartNumber, forKey: Self.kartNumberKey)
+            if kartNumber > 0 {
+                TimingClient.shared.kartNumber = String(kartNumber)
+            } else {
+                TimingClient.shared.kartNumber = nil
+            }
+            WatchConnection.shared.updateKartNumber(kartNumber)
+        }
+    }
+    private static let kartNumberKey = "kartNumber"
+
+    // Подписки на TimingClient
+    private var timingLastLapObserver: AnyCancellable?
     #endif
 
     init() {
         #if os(iOS)
+        self.kartNumber = UserDefaults.standard.integer(forKey: Self.kartNumberKey)
         let connection = WatchConnection.shared
         connection.delegate = self
         connection.activate()
         self.watchConnected = connection.isReachable
+        // Применяем сохранённый номер в TimingClient сразу, чтобы при подключении
+        // к SignalR фильтр уже работал.
+        if kartNumber > 0 {
+            TimingClient.shared.kartNumber = String(kartNumber)
+        }
+        // Шлём на часы при старте — пользователь мог поменять там, пока связи не было.
+        WatchConnection.shared.updateKartNumber(kartNumber)
+        subscribeToTiming()
         #endif
     }
+
+    #if os(iOS)
+    private func subscribeToTiming() {
+        // Каждый новый lastLapMs — пробрасываем на часы.
+        timingLastLapObserver = TimingClient.shared.$lastLapMs
+            .compactMap { $0 }
+            .removeDuplicates()
+            .sink { ms in
+                WatchConnection.shared.sendLastLap(ms)
+            }
+    }
+    #endif
 
     func start() {
         guard !isRecording else { return }
@@ -130,6 +169,11 @@ final class RecordingController: ObservableObject {
         self.watchFilesReceived = []
         self.watchIMUSampleCount = nil
         self.heartRateSampleCount = nil
+
+        // Поднимаем SignalR-соединение к RaceMann если номер карта задан.
+        if kartNumber > 0 {
+            Task { await TimingClient.shared.connect() }
+        }
         UIApplication.shared.isIdleTimerDisabled = true
         startTimer()
 
@@ -182,6 +226,9 @@ final class RecordingController: ObservableObject {
         isRecording = false
         startedAt = nil
         sessionURL = nil
+
+        // Отключаемся от RaceMann чтобы не держать WS впустую между заездами.
+        TimingClient.shared.disconnect()
     }
 
     private func writeManifest(
@@ -371,6 +418,14 @@ extension RecordingController: WatchConnectionDelegate {
 
     func watchConnection(_ connection: WatchConnection, steeringAngleChanged radians: Double) {
         self.steeringAngleRadians = radians
+    }
+
+    func watchConnection(_ connection: WatchConnection, kartNumberChanged number: Int) {
+        // Прилетело с часов (изменил пилот). Защита от эхо: didSet не ретранслирует
+        // то же значение, applicationContext сам де-дуплицирует одинаковые.
+        if self.kartNumber != number {
+            self.kartNumber = number
+        }
     }
 }
 #endif

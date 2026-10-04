@@ -13,6 +13,24 @@ final class WatchRecordingController: NSObject, ObservableObject {
     @Published private(set) var currentBPM: Double?
     @Published private(set) var phoneConnected: Bool = false
 
+    // Номер карта: 0 = ещё не задан. Хранится в UserDefaults, чтобы при запуске
+    // часов до спаривания с телефоном гонщик мог сразу выставить номер.
+    @Published var kartNumber: Int {
+        didSet {
+            UserDefaults.standard.set(kartNumber, forKey: Self.kartNumberKey)
+            WatchConnection.shared.updateKartNumber(kartNumber)
+        }
+    }
+
+    // Последнее время круга в миллисекундах — пушит iPhone по WCSession.
+    // Храним опционально: nil = ещё ни одного круга в этой сессии.
+    @Published var currentLastLapMs: Int?
+
+    // Лучшее время за историю (опционально; iPhone может обновлять по мере заездов).
+    @Published var bestLapMs: Int?
+
+    private static let kartNumberKey = "kartNumber"
+
     private let healthStore = HKHealthStore()
     private var workoutSession: HKWorkoutSession?
     private var workoutBuilder: HKLiveWorkoutBuilder?
@@ -33,11 +51,23 @@ final class WatchRecordingController: NSObject, ObservableObject {
     private let steeringDownsample: Int = 5  // 100Hz → 20Hz
 
     override init() {
+        self.kartNumber = UserDefaults.standard.integer(forKey: Self.kartNumberKey)
         super.init()
         let connection = WatchConnection.shared
         connection.delegate = self
         connection.activate()
         self.phoneConnected = connection.isReachable
+    }
+
+    /// Публичный сеттер для последнего круга — вызывается с iPhone через WCSession.
+    /// Здесь — просто обновляем @Published; wiring приёма сообщения добавит оркестратор.
+    func setLastLap(_ ms: Int) {
+        currentLastLapMs = ms
+        if let best = bestLapMs {
+            if ms < best { bestLapMs = ms }
+        } else {
+            bestLapMs = ms
+        }
     }
 
     func start() {
@@ -132,6 +162,7 @@ final class WatchRecordingController: NSObject, ObservableObject {
         startedAt = now
         currentSessionID = id
         currentBPM = nil
+        currentLastLapMs = nil
         elapsedSeconds = 0
 
         hrRecorder.onBPMUpdate = { [weak self] bpm in
@@ -301,5 +332,17 @@ extension WatchRecordingController: WatchConnectionDelegate {
 
     func watchConnection(_ connection: WatchConnection, reachabilityChanged isReachable: Bool) {
         self.phoneConnected = isReachable
+    }
+
+    func watchConnection(_ connection: WatchConnection, lastLapReceivedMs ms: Int) {
+        setLastLap(ms)
+    }
+
+    func watchConnection(_ connection: WatchConnection, kartNumberChanged number: Int) {
+        // Пришло с iPhone — применяем без ретрансляции обратно (didSet сам
+        // ретранслирует, но applicationContext дубликаты не доставит).
+        if self.kartNumber != number {
+            self.kartNumber = number
+        }
     }
 }

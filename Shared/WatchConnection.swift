@@ -9,6 +9,8 @@ enum WatchMessageKey {
     static let ack = "ack"
     static let error = "error"
     static let steeringAngle = "steeringAngleRad"
+    static let lastLapMs = "lastLapMs"
+    static let kartNumber = "kartNumber"
 }
 
 enum WatchCommand {
@@ -17,6 +19,7 @@ enum WatchCommand {
     static let watchStart = "watchStart"
     static let watchStop = "watchStop"
     static let steering = "steering"
+    static let lastLap = "lastLap"
 }
 
 protocol WatchConnectionDelegate: AnyObject {
@@ -25,6 +28,8 @@ protocol WatchConnectionDelegate: AnyObject {
     @MainActor func watchConnection(_ connection: WatchConnection, didReceiveFile url: URL, filename: String, sessionID: UUID)
     @MainActor func watchConnection(_ connection: WatchConnection, reachabilityChanged isReachable: Bool)
     @MainActor func watchConnection(_ connection: WatchConnection, steeringAngleChanged radians: Double)
+    @MainActor func watchConnection(_ connection: WatchConnection, lastLapReceivedMs ms: Int)
+    @MainActor func watchConnection(_ connection: WatchConnection, kartNumberChanged number: Int)
 }
 
 extension WatchConnectionDelegate {
@@ -33,6 +38,8 @@ extension WatchConnectionDelegate {
     @MainActor func watchConnection(_ connection: WatchConnection, didReceiveFile url: URL, filename: String, sessionID: UUID) {}
     @MainActor func watchConnection(_ connection: WatchConnection, reachabilityChanged isReachable: Bool) {}
     @MainActor func watchConnection(_ connection: WatchConnection, steeringAngleChanged radians: Double) {}
+    @MainActor func watchConnection(_ connection: WatchConnection, lastLapReceivedMs ms: Int) {}
+    @MainActor func watchConnection(_ connection: WatchConnection, kartNumberChanged number: Int) {}
 }
 
 final class WatchConnection: NSObject {
@@ -117,6 +124,32 @@ final class WatchConnection: NSObject {
         session.sendMessage(payload, replyHandler: nil, errorHandler: nil)
     }
 
+    // iPhone → Watch: последнее время круга из RaceMann (мс). Если часы не
+    // reachable, кладём в очередь transferUserInfo — пилот увидит с задержкой,
+    // но увидит.
+    func sendLastLap(_ ms: Int) {
+        guard let session, session.activationState == .activated else { return }
+        let payload: [String: Any] = [
+            WatchMessageKey.command: WatchCommand.lastLap,
+            WatchMessageKey.lastLapMs: ms
+        ]
+        if session.isReachable {
+            session.sendMessage(payload, replyHandler: nil, errorHandler: { _ in
+                session.transferUserInfo(payload)
+            })
+        } else {
+            session.transferUserInfo(payload)
+        }
+    }
+
+    // Эагерная синхронизация номера карта через applicationContext.
+    // iOS сам доставит последнее значение, дубликаты не шлёт.
+    func updateKartNumber(_ number: Int) {
+        guard let session, session.activationState == .activated else { return }
+        let payload: [String: Any] = [WatchMessageKey.kartNumber: number]
+        try? session.updateApplicationContext(payload)
+    }
+
     private func send(payload: [String: Any], reply: ((Bool, String?) -> Void)?) -> Bool {
         guard let session, session.activationState == .activated else {
             reply?(false, "WCSession не активна")
@@ -187,6 +220,14 @@ extension WatchConnection: WCSessionDelegate {
         handleIncoming(userInfo, replyHandler: nil)
     }
 
+    nonisolated func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
+        if let number = applicationContext[WatchMessageKey.kartNumber] as? Int {
+            Task { @MainActor in
+                self.delegate?.watchConnection(self, kartNumberChanged: number)
+            }
+        }
+    }
+
     private nonisolated func handleIncoming(_ message: [String: Any], replyHandler: (([String: Any]) -> Void)?) {
         let command = message[WatchMessageKey.command] as? String
 
@@ -197,6 +238,17 @@ extension WatchConnection: WCSessionDelegate {
                     self.delegate?.watchConnection(self, steeringAngleChanged: angle)
                 }
             }
+            return
+        }
+
+        // lastLap: iPhone → Watch, без sessionID.
+        if command == WatchCommand.lastLap {
+            if let ms = message[WatchMessageKey.lastLapMs] as? Int {
+                Task { @MainActor in
+                    self.delegate?.watchConnection(self, lastLapReceivedMs: ms)
+                }
+            }
+            replyHandler?([WatchMessageKey.ack: true])
             return
         }
 
