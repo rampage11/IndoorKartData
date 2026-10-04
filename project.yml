@@ -35,6 +35,8 @@ targets:
           - UIInterfaceOrientationPortrait
         UIBackgroundModes:
           - audio
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
         NSMicrophoneUsageDescription: Записываем звук двигателя карта для оценки оборотов и скорости.
         NSMotionUsageDescription: Записываем ускорения и повороты карта для анализа заезда.
         NSHealthShareUsageDescription: Используем пульс с Apple Watch, чтобы связать физическую нагрузку с динамикой заезда.

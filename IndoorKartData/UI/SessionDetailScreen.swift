@@ -40,9 +40,17 @@ struct SessionDetailScreen: View {
             }
 
             Section {
-                ShareLink(item: item.url) {
-                    Label("Поделиться сессией", systemImage: "square.and.arrow.up")
+                ShareLink(
+                    item: SessionArchive(sessionURL: item.url),
+                    preview: SharePreview(
+                        "Сессия \(String(item.manifest.id.uuidString.prefix(8)))",
+                        image: Image(systemName: "doc.zipper")
+                    )
+                ) {
+                    Label("Поделиться как .zip", systemImage: "square.and.arrow.up")
                 }
+            } footer: {
+                Text("Папка сессии будет упакована в .zip и отправлена через AirDrop, Files или iCloud.")
             }
         }
         .navigationTitle("Сессия")
