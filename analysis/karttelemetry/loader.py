@@ -76,6 +76,9 @@ def load_session(session_dir: Path, *, load_audio_data: bool = True) -> dict[str
     Returns a dict with keys: 'session_dir', 'manifest', 'iphone_imu',
     'watch_imu', 'heart_rate', 'audio' (any of which may be None/missing).
     If `load_audio_data` is False, audio is skipped even if present.
+
+    Файлы определяются по имени на диске, не по manifest — на iOS бывает,
+    что watch-файлы прилетают пост-stop и не попадают в manifest.sources.
     """
     session_dir = Path(session_dir)
     manifest = load_manifest(session_dir)
@@ -89,34 +92,29 @@ def load_session(session_dir: Path, *, load_audio_data: bool = True) -> dict[str
         "audio": None,
     }
 
-    # Карта: kind -> ключ в out, функция-загрузчик
-    kind_map = {
-        "iphone_imu": ("iphone_imu", load_imu),
-        "watch_imu": ("watch_imu", load_imu),
-        "heart_rate": ("heart_rate", load_hr),
+    # Фиксированные имена файлов → (ключ в out, функция-загрузчик)
+    file_map = {
+        "iphone_imu.bin": ("iphone_imu", load_imu),
+        "watch_imu.bin": ("watch_imu", load_imu),
+        "heart_rate.bin": ("heart_rate", load_hr),
     }
 
-    for source in manifest.get("sources", []):
-        kind = source.get("kind")
-        filename = source.get("filename")
-        if not filename:
-            continue
+    for filename, (key, fn) in file_map.items():
         file_path = session_dir / filename
         if not file_path.exists():
             continue
+        try:
+            out[key] = fn(file_path)
+        except Exception as e:  # noqa: BLE001
+            out[key] = None
+            out.setdefault("_errors", []).append(f"{key}: {e}")
 
-        if kind in kind_map:
-            key, fn = kind_map[kind]
-            try:
-                out[key] = fn(file_path)
-            except Exception as e:  # noqa: BLE001
-                out[key] = None
-                out.setdefault("_errors", []).append(f"{kind}: {e}")
-        elif kind == "iphone_audio" and load_audio_data:
-            try:
-                out["audio"] = load_audio(file_path)
-            except Exception as e:  # noqa: BLE001
-                out["audio"] = None
-                out.setdefault("_errors", []).append(f"audio: {e}")
+    audio_path = session_dir / "iphone_audio.wav"
+    if load_audio_data and audio_path.exists():
+        try:
+            out["audio"] = load_audio(audio_path)
+        except Exception as e:  # noqa: BLE001
+            out["audio"] = None
+            out.setdefault("_errors", []).append(f"audio: {e}")
 
     return out

@@ -30,20 +30,36 @@ def _print_summary(session_dir: Path, session: dict[str, Any]) -> None:
     print(f"started: {started}")
     print(f"ended:   {ended}")
     print(f"path:    {session_dir}")
+
+    # Собираем сводку по файлам: берём и manifest, и реально лежащие файлы.
+    manifest_by_filename = {s.get("filename"): s for s in manifest.get("sources", [])}
+    known_files = ("iphone_imu.bin", "iphone_audio.wav", "watch_imu.bin", "heart_rate.bin")
+
     print("sources:")
-    for src in manifest.get("sources", []):
-        filename = src.get("filename", "?")
-        kind = src.get("kind", "?")
+    for filename in known_files:
+        fpath = session_dir / filename
+        if not fpath.exists():
+            continue
+        src = manifest_by_filename.get(filename, {})
+        kind = src.get("kind") or filename.replace(".bin", "").replace(".wav", "")
         count = src.get("sampleCount")
         rate = src.get("sampleRateHz")
-        fpath = session_dir / filename
-        size = fpath.stat().st_size if fpath.exists() else 0
-        present = "ok" if fpath.exists() else "missing"
+        size = fpath.stat().st_size
+        in_manifest = filename in manifest_by_filename
+        status = "ok" if in_manifest else "orphan"
         rate_s = f"{rate:g} Hz" if rate else "variable"
+        count_s = f"samples={count}" if count is not None else "samples=?"
         print(
-            f"  - {kind:<12} {filename:<24} {present:<7} "
-            f"{_format_size(size):>10}  samples={count}  rate={rate_s}"
+            f"  - {kind:<12} {filename:<24} {status:<7} "
+            f"{_format_size(size):>10}  {count_s}  rate={rate_s}"
         )
+
+    orphans = [
+        f for f in known_files
+        if (session_dir / f).exists() and f not in manifest_by_filename
+    ]
+    if orphans:
+        print(f"note: {len(orphans)} file(s) on disk не упомянуты в manifest — грузим напрямую.")
 
     if session.get("_errors"):
         print("warnings:")

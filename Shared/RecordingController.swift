@@ -163,20 +163,18 @@ final class RecordingController: ObservableObject {
 
         let endedAt = Date()
         if let url = sessionURL, let id = currentSessionID, let started = startedAt {
+            if !audioStarted {
+                let audioURL = url.appendingPathComponent("iphone_audio.wav")
+                try? FileManager.default.removeItem(at: audioURL)
+            }
             writeManifest(
                 sessionURL: url,
                 id: id,
                 startedAt: started,
                 endedAt: endedAt,
                 imuSampleCount: imuCount,
-                audioFrameCount: audioStarted ? audioFrames : nil,
-                includeWatch: watchFilesReceived.contains("watch_imu.bin"),
-                includeHR: watchFilesReceived.contains("heart_rate.bin")
+                audioFrameCount: audioStarted ? audioFrames : nil
             )
-            if !audioStarted {
-                let audioURL = url.appendingPathComponent("iphone_audio.wav")
-                try? FileManager.default.removeItem(at: audioURL)
-            }
         }
 
         UIApplication.shared.isIdleTimerDisabled = false
@@ -191,9 +189,7 @@ final class RecordingController: ObservableObject {
         startedAt: Date,
         endedAt: Date,
         imuSampleCount: Int,
-        audioFrameCount: Int?,
-        includeWatch: Bool,
-        includeHR: Bool
+        audioFrameCount: Int?
     ) {
         let deviceName = UIDevice.current.name
         let deviceModel = UIDevice.current.model
@@ -218,24 +214,10 @@ final class RecordingController: ObservableObject {
             ))
         }
 
-        if includeWatch {
-            sources.append(DataSourceEntry(
-                kind: .watchIMU,
-                filename: "watch_imu.bin",
-                sampleCount: watchIMUSampleCount,
-                sampleRateHz: 100.0,
-                format: "imu_v1"
-            ))
-        }
-        if includeHR {
-            sources.append(DataSourceEntry(
-                kind: .heartRate,
-                filename: "heart_rate.bin",
-                sampleCount: heartRateSampleCount,
-                sampleRateHz: nil,
-                format: "hr_v1"
-            ))
-        }
+        // Прочие источники (часы, HR) всегда определяем по наличию файлов на диске.
+        // Из-за асинхронности transferFile они могут прийти как до stop, так и после;
+        // всегда сканируем реальную директорию, чтобы manifest не отставал.
+        appendWatchSourcesFromDisk(to: &sources, sessionURL: sessionURL)
 
         let manifest = SessionManifest(
             id: id,
@@ -251,6 +233,32 @@ final class RecordingController: ObservableObject {
             try SessionStorage.shared.writeManifest(manifest, sessionURL: sessionURL)
         } catch {
             self.lastError = "Не удалось записать manifest: \(error.localizedDescription)"
+        }
+    }
+
+    private func appendWatchSourcesFromDisk(to sources: inout [DataSourceEntry], sessionURL: URL) {
+        let fm = FileManager.default
+        let watchIMUURL = sessionURL.appendingPathComponent("watch_imu.bin")
+        if fm.fileExists(atPath: watchIMUURL.path),
+           !sources.contains(where: { $0.filename == "watch_imu.bin" }) {
+            sources.append(DataSourceEntry(
+                kind: .watchIMU,
+                filename: "watch_imu.bin",
+                sampleCount: watchIMUSampleCount,
+                sampleRateHz: 100.0,
+                format: "imu_v1"
+            ))
+        }
+        let hrURL = sessionURL.appendingPathComponent("heart_rate.bin")
+        if fm.fileExists(atPath: hrURL.path),
+           !sources.contains(where: { $0.filename == "heart_rate.bin" }) {
+            sources.append(DataSourceEntry(
+                kind: .heartRate,
+                filename: "heart_rate.bin",
+                sampleCount: heartRateSampleCount,
+                sampleRateHz: nil,
+                format: "hr_v1"
+            ))
         }
     }
 
@@ -305,27 +313,17 @@ final class RecordingController: ObservableObject {
     }
 
     private func appendWatchSourceToExistingManifest(dir: URL, filename: String) {
-        guard var manifest = try? SessionStorage.shared.loadManifest(sessionURL: dir) else { return }
-        let kind: DataSourceKind
-        let format: String
-        let rate: Double?
-        switch filename {
-        case "watch_imu.bin":
-            kind = .watchIMU; format = "imu_v1"; rate = 100.0
-        case "heart_rate.bin":
-            kind = .heartRate; format = "hr_v1"; rate = nil
-        default:
+        guard var manifest = try? SessionStorage.shared.loadManifest(sessionURL: dir) else {
+            self.lastError = "Не удалось обновить manifest: не читается существующий"
             return
         }
-        if !manifest.sources.contains(where: { $0.filename == filename }) {
-            manifest.sources.append(DataSourceEntry(
-                kind: kind,
-                filename: filename,
-                sampleCount: nil,
-                sampleRateHz: rate,
-                format: format
-            ))
-            try? SessionStorage.shared.writeManifest(manifest, sessionURL: dir)
+        // Пересканируем директорию целиком — так же как при stop. Это закрывает
+        // гонку когда файлы часов приходят после того как iPhone уже закрыл сессию.
+        appendWatchSourcesFromDisk(to: &manifest.sources, sessionURL: dir)
+        do {
+            try SessionStorage.shared.writeManifest(manifest, sessionURL: dir)
+        } catch {
+            self.lastError = "Не удалось обновить manifest: \(error.localizedDescription)"
         }
     }
 
