@@ -21,6 +21,7 @@ final class RecordingController: ObservableObject {
     private let imuRecorder = IMURecorder()
     private let audioRecorder = AudioRecorder()
     private let timingRecorder = TimingRecorder()
+    private let voiceAnnouncer = VoiceAnnouncer()
     private var watchFilesReceived: Set<String> = []
     private var watchIMUSampleCount: Int?
     private var heartRateSampleCount: Int?
@@ -41,6 +42,15 @@ final class RecordingController: ObservableObject {
     }
     private static let kartNumberKey = "kartNumber"
 
+    // Голосовое оповещение времени круга. true по умолчанию, в UserDefaults.
+    @Published var voiceEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(voiceEnabled, forKey: Self.voiceEnabledKey)
+            if !voiceEnabled { voiceAnnouncer.stopAll() }
+        }
+    }
+    private static let voiceEnabledKey = "voiceEnabled"
+
     // Подписки на TimingClient
     private var timingLastLapObserver: AnyCancellable?
     #endif
@@ -48,6 +58,8 @@ final class RecordingController: ObservableObject {
     init() {
         #if os(iOS)
         self.kartNumber = UserDefaults.standard.integer(forKey: Self.kartNumberKey)
+        // Голос по умолчанию включен — иначе toggle не нужен был бы сделан.
+        self.voiceEnabled = UserDefaults.standard.object(forKey: Self.voiceEnabledKey) as? Bool ?? true
         let connection = WatchConnection.shared
         connection.delegate = self
         connection.activate()
@@ -65,12 +77,19 @@ final class RecordingController: ObservableObject {
 
     #if os(iOS)
     private func subscribeToTiming() {
-        // Каждый новый lastLapMs — пробрасываем на часы.
+        // Каждый новый lastLapMs — на часы, в голосовое оповещение (если
+        // включено), и в lapHistory TimingRecorder (сам подписан отдельно).
         timingLastLapObserver = TimingClient.shared.$lastLapMs
             .compactMap { $0 }
             .removeDuplicates()
-            .sink { ms in
+            .sink { [weak self] ms in
                 WatchConnection.shared.sendLastLap(ms)
+                guard let self else { return }
+                Task { @MainActor in
+                    if self.voiceEnabled {
+                        self.voiceAnnouncer.announceLap(ms: ms, lapNumber: TimingClient.shared.lapCount)
+                    }
+                }
             }
     }
     #endif

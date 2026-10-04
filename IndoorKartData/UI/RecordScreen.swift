@@ -10,8 +10,11 @@ struct RecordScreen: View {
                 errorBanner(error)
             }
 
-            watchStatusBadge
-                .padding(.top, 12)
+            HStack(spacing: 12) {
+                watchStatusBadge
+                voiceToggleBadge
+            }
+            .padding(.top, 12)
 
             Spacer()
 
@@ -74,6 +77,24 @@ struct RecordScreen: View {
                 .foregroundStyle(.secondary)
         }
         .accessibilityLabel("Виртуальный руль")
+    }
+
+    private var voiceToggleBadge: some View {
+        Button {
+            recorder.voiceEnabled.toggle()
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: recorder.voiceEnabled ? "speaker.wave.2.fill" : "speaker.slash.fill")
+                Text(recorder.voiceEnabled ? "Звук: вкл" : "Звук: выкл")
+            }
+            .font(.caption.weight(.medium))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(.ultraThinMaterial, in: Capsule())
+            .foregroundStyle(recorder.voiceEnabled ? Color.green : Color.secondary)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(recorder.voiceEnabled ? "Отключить голос" : "Включить голос")
     }
 
     private var watchStatusBadge: some View {
