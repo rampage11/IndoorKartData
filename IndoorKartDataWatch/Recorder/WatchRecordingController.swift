@@ -2,6 +2,7 @@ import Foundation
 import Combine
 import HealthKit
 import WatchKit
+import CoreMotion
 
 @MainActor
 final class WatchRecordingController: NSObject, ObservableObject {
@@ -23,6 +24,13 @@ final class WatchRecordingController: NSObject, ObservableObject {
     private var startedAt: Date?
     private var timer: Timer?
     private var startedByPhone: Bool = false
+
+    // Для живого стрима руля: интегрируем rotationRate.y (твист запястья) и
+    // раз в N семплов отправляем на iPhone.
+    private var steeringAccumRad: Double = 0
+    private var steeringLastSampleTs: TimeInterval?
+    private var steeringSampleCounter: Int = 0
+    private let steeringDownsample: Int = 5  // 100Hz → 20Hz
 
     override init() {
         super.init()
@@ -130,6 +138,14 @@ final class WatchRecordingController: NSObject, ObservableObject {
             self?.currentBPM = bpm
         }
 
+        // Сбрасываем интегратор руля на нуле.
+        steeringAccumRad = 0
+        steeringLastSampleTs = nil
+        steeringSampleCounter = 0
+        imuRecorder.onLiveSample = { [weak self] motion in
+            self?.processLiveSample(motion)
+        }
+
         try hrRecorder.start(sessionDirectory: directory, startDate: now)
         try imuRecorder.start(sessionDirectory: directory)
 
@@ -143,14 +159,46 @@ final class WatchRecordingController: NSObject, ObservableObject {
         }
     }
 
+    // Вызывается из imuRecorder.onLiveSample (на его operation queue).
+    // Делаем всю логику nonisolated: только простые numeric операции и
+    // отправку по WatchConnection (thread-safe).
+    private nonisolated func processLiveSample(_ motion: CMDeviceMotion) {
+        // К self.steeringAccumRad и т.д. обращаемся по сути из одного
+        // producer-thread (operation queue recorder-а). Это даёт нам
+        // консистентность без замка. @MainActor-свойства не трогаем.
+        // Так как мы nonisolated — читаем через Task hop только когда нужно.
+        Task { @MainActor in
+            self.integrateAndMaybeSendSteering(motion)
+        }
+    }
+
+    private func integrateAndMaybeSendSteering(_ motion: CMDeviceMotion) {
+        guard isRecording else { return }
+        let now = motion.timestamp
+        if let last = steeringLastSampleTs {
+            let dt = now - last
+            // rotationRate.y ≈ скорость пронации/супинации кисти.
+            steeringAccumRad += motion.rotationRate.y * dt
+        }
+        steeringLastSampleTs = now
+        steeringSampleCounter += 1
+        if steeringSampleCounter >= steeringDownsample {
+            steeringSampleCounter = 0
+            WatchConnection.shared.sendSteeringAngle(steeringAccumRad)
+        }
+    }
+
     private func finalizeRecording() async {
         timer?.invalidate()
         timer = nil
 
         let endDate = Date()
 
+        imuRecorder.onLiveSample = nil
         imuRecorder.stop()
         hrRecorder.stop()
+        // Сброс колеса в ноль на телефоне — опционально.
+        WatchConnection.shared.sendSteeringAngle(0)
 
         if let session = workoutSession {
             session.end()

@@ -29,6 +29,9 @@ struct RecordScreen: View {
                 .foregroundStyle(.secondary)
                 .padding(.top, 4)
 
+            steeringWheel
+                .padding(.top, 24)
+
             Spacer()
             Spacer()
         }
@@ -47,6 +50,30 @@ struct RecordScreen: View {
                 UIApplication.shared.isIdleTimerDisabled = false
             }
         }
+    }
+
+    private var steeringWheel: some View {
+        VStack(spacing: 4) {
+            ZStack {
+                Circle()
+                    .stroke(Color.secondary.opacity(0.3), lineWidth: 2)
+                    .frame(width: 140, height: 140)
+                Image(systemName: "steeringwheel")
+                    .font(.system(size: 100, weight: .regular))
+                    .foregroundStyle(.primary)
+                    .rotationEffect(.radians(-recorder.steeringAngleRadians))
+                    .animation(.linear(duration: 0.05), value: recorder.steeringAngleRadians)
+                // Метка «12 часов» в вершине круга — глазу легче заметить поворот.
+                Circle()
+                    .fill(Color.orange)
+                    .frame(width: 8, height: 8)
+                    .offset(y: -70)
+            }
+            Text("\(Int(recorder.steeringAngleRadians * 180 / .pi))°")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+        .accessibilityLabel("Виртуальный руль")
     }
 
     private var watchStatusBadge: some View {

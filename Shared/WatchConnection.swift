@@ -8,6 +8,7 @@ enum WatchMessageKey {
     static let filename = "filename"
     static let ack = "ack"
     static let error = "error"
+    static let steeringAngle = "steeringAngleRad"
 }
 
 enum WatchCommand {
@@ -15,6 +16,7 @@ enum WatchCommand {
     static let stop = "stop"
     static let watchStart = "watchStart"
     static let watchStop = "watchStop"
+    static let steering = "steering"
 }
 
 protocol WatchConnectionDelegate: AnyObject {
@@ -22,6 +24,7 @@ protocol WatchConnectionDelegate: AnyObject {
     @MainActor func watchConnection(_ connection: WatchConnection, didReceiveStop sessionID: UUID)
     @MainActor func watchConnection(_ connection: WatchConnection, didReceiveFile url: URL, filename: String, sessionID: UUID)
     @MainActor func watchConnection(_ connection: WatchConnection, reachabilityChanged isReachable: Bool)
+    @MainActor func watchConnection(_ connection: WatchConnection, steeringAngleChanged radians: Double)
 }
 
 extension WatchConnectionDelegate {
@@ -29,6 +32,7 @@ extension WatchConnectionDelegate {
     @MainActor func watchConnection(_ connection: WatchConnection, didReceiveStop sessionID: UUID) {}
     @MainActor func watchConnection(_ connection: WatchConnection, didReceiveFile url: URL, filename: String, sessionID: UUID) {}
     @MainActor func watchConnection(_ connection: WatchConnection, reachabilityChanged isReachable: Bool) {}
+    @MainActor func watchConnection(_ connection: WatchConnection, steeringAngleChanged radians: Double) {}
 }
 
 final class WatchConnection: NSObject {
@@ -100,6 +104,17 @@ final class WatchConnection: NSObject {
             WatchMessageKey.sessionID: sessionID.uuidString
         ]
         return send(payload: payload, reply: nil)
+    }
+
+    // Живой стрим угла поворота запястья. Шлём только если iPhone reachable;
+    // в очередь не ставим, устаревший угол нас не интересует.
+    func sendSteeringAngle(_ radians: Double) {
+        guard let session, session.activationState == .activated, session.isReachable else { return }
+        let payload: [String: Any] = [
+            WatchMessageKey.command: WatchCommand.steering,
+            WatchMessageKey.steeringAngle: radians
+        ]
+        session.sendMessage(payload, replyHandler: nil, errorHandler: nil)
     }
 
     private func send(payload: [String: Any], reply: ((Bool, String?) -> Void)?) -> Bool {
@@ -174,6 +189,17 @@ extension WatchConnection: WCSessionDelegate {
 
     private nonisolated func handleIncoming(_ message: [String: Any], replyHandler: (([String: Any]) -> Void)?) {
         let command = message[WatchMessageKey.command] as? String
+
+        // steering: не требует sessionID, прилетает 20Гц, обрабатываем отдельно без ack.
+        if command == WatchCommand.steering {
+            if let angle = message[WatchMessageKey.steeringAngle] as? Double {
+                Task { @MainActor in
+                    self.delegate?.watchConnection(self, steeringAngleChanged: angle)
+                }
+            }
+            return
+        }
+
         let sessionIDString = message[WatchMessageKey.sessionID] as? String
         let startedAtEpoch = message[WatchMessageKey.startedAt] as? Double
 

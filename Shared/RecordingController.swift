@@ -11,6 +11,7 @@ final class RecordingController: ObservableObject {
     @Published private(set) var currentSessionID: UUID?
     @Published var lastError: String?
     @Published private(set) var watchConnected: Bool = false
+    @Published private(set) var steeringAngleRadians: Double = 0
 
     private var timer: Timer?
     private var startedAt: Date?
@@ -366,6 +367,10 @@ extension RecordingController: WatchConnectionDelegate {
 
     func watchConnection(_ connection: WatchConnection, reachabilityChanged isReachable: Bool) {
         self.watchConnected = isReachable
+    }
+
+    func watchConnection(_ connection: WatchConnection, steeringAngleChanged radians: Double) {
+        self.steeringAngleRadians = radians
     }
 }
 #endif

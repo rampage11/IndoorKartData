@@ -15,6 +15,10 @@ final class WatchIMURecorder {
     private(set) var sampleCount: Int = 0
     private(set) var fileURL: URL?
 
+    // Коллбэк для живого стрима в UI/связь с iPhone. Вызывается на внутренней
+    // operation queue — переключать actor должен подписчик.
+    var onLiveSample: ((CMDeviceMotion) -> Void)?
+
     static let sampleRateHz: Double = 100.0
 
     func start(sessionDirectory: URL) throws {
@@ -62,6 +66,7 @@ final class WatchIMURecorder {
                 try? self.fileHandle?.close()
                 self.fileHandle = nil
             }
+            self.onLiveSample?(motion)
         }
     }
 
