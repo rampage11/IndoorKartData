@@ -64,7 +64,7 @@ targets:
         CFBundleDisplayName: IndoorKart
         WKApplication: true
         WKCompanionAppBundleIdentifier: com.indoorkartdata.app
-        WKRunsIndependentlyOfCompanionApp: false
+        WKRunsIndependentlyOfCompanionApp: true
         WKBackgroundModes:
           - workout-processing
         NSMotionUsageDescription: Записываем ускорения и повороты запястья для оценки действий рулём.
