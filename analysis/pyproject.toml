@@ -1,0 +1,27 @@
+[project]
+name = "karttelemetry"
+version = "0.1.0"
+description = "Indoor karting telemetry analysis tools"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "matplotlib>=3.8",
+    "soundfile>=0.12",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["karttelemetry*"]
+
+[project.scripts]
+karttelemetry-inspect = "karttelemetry.inspect:main"

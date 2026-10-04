@@ -10,6 +10,7 @@ final class WatchRecordingController: NSObject, ObservableObject {
     @Published private(set) var currentSessionID: UUID?
     @Published var lastError: String?
     @Published private(set) var currentBPM: Double?
+    @Published private(set) var phoneConnected: Bool = false
 
     private let healthStore = HKHealthStore()
     private var workoutSession: HKWorkoutSession?
@@ -21,15 +22,29 @@ final class WatchRecordingController: NSObject, ObservableObject {
     private var sessionDirectory: URL?
     private var startedAt: Date?
     private var timer: Timer?
+    private var startedByPhone: Bool = false
+
+    override init() {
+        super.init()
+        let connection = WatchConnection.shared
+        connection.delegate = self
+        connection.activate()
+        self.phoneConnected = connection.isReachable
+    }
 
     func start() {
         guard !isRecording else { return }
         lastError = nil
+        startedByPhone = false
+
+        let id = UUID()
+        let now = Date()
 
         Task { @MainActor in
             do {
                 try await requestAuthorizationIfNeeded()
-                try beginRecording()
+                try beginRecording(id: id, startDate: now)
+                WatchConnection.shared.sendWatchStart(sessionID: id, startedAt: now)
             } catch {
                 lastError = error.localizedDescription
                 await cleanupOnFailure()
@@ -39,6 +54,35 @@ final class WatchRecordingController: NSObject, ObservableObject {
 
     func stop() {
         guard isRecording else { return }
+        let id = currentSessionID
+        let wasByPhone = startedByPhone
+        Task { @MainActor in
+            await finalizeRecording()
+            // Если старт инициировал телефон, он сам пришлёт watchStop/stop; дублировать не нужно.
+            if let id, !wasByPhone {
+                WatchConnection.shared.sendWatchStop(sessionID: id)
+            }
+        }
+    }
+
+    private func startFromPhone(sessionID: UUID, startedAt: Date) {
+        guard !isRecording else { return }
+        lastError = nil
+        startedByPhone = true
+
+        Task { @MainActor in
+            do {
+                try await requestAuthorizationIfNeeded()
+                try beginRecording(id: sessionID, startDate: startedAt)
+            } catch {
+                lastError = error.localizedDescription
+                await cleanupOnFailure()
+            }
+        }
+    }
+
+    private func stopFromPhone(sessionID: UUID) {
+        guard isRecording, currentSessionID == sessionID else { return }
         Task { @MainActor in
             await finalizeRecording()
         }
@@ -57,9 +101,7 @@ final class WatchRecordingController: NSObject, ObservableObject {
         try await healthStore.requestAuthorization(toShare: share, read: read)
     }
 
-    private func beginRecording() throws {
-        let id = UUID()
-        let now = Date()
+    private func beginRecording(id: UUID, startDate now: Date) throws {
         let directory = try SessionStorage.shared.createSessionDirectory(id: id, startedAt: now)
 
         let configuration = HKWorkoutConfiguration()
@@ -123,14 +165,12 @@ final class WatchRecordingController: NSObject, ObservableObject {
             }
         }
 
-        if let directory = sessionDirectory,
-           let id = currentSessionID,
-           let started = startedAt {
-            do {
-                try writeManifest(id: id, started: started, ended: endDate, directory: directory)
-            } catch {
-                lastError = "Не удалось записать manifest: \(error.localizedDescription)"
-            }
+        let directory = sessionDirectory
+        let id = currentSessionID
+
+        if let directory, let id {
+            // Манифест теперь владеет телефон; часы отправляют только бинари.
+            transferArtifactsToPhone(directory: directory, sessionID: id)
         }
 
         isRecording = false
@@ -139,6 +179,7 @@ final class WatchRecordingController: NSObject, ObservableObject {
         workoutSession = nil
         workoutBuilder = nil
         currentBPM = nil
+        startedByPhone = false
     }
 
     private func cleanupOnFailure() async {
@@ -156,35 +197,19 @@ final class WatchRecordingController: NSObject, ObservableObject {
         sessionDirectory = nil
         currentSessionID = nil
         currentBPM = nil
+        startedByPhone = false
     }
 
-    private func writeManifest(id: UUID, started: Date, ended: Date, directory: URL) throws {
-        let appVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.0"
-        let device = WKInterfaceDevice.current()
-        let imuEntry = DataSourceEntry(
-            kind: .watchIMU,
-            filename: "watch_imu.bin",
-            sampleCount: imuRecorder.sampleCount,
-            sampleRateHz: WatchIMURecorder.sampleRateHz,
-            format: "imu_v1"
-        )
-        let hrEntry = DataSourceEntry(
-            kind: .heartRate,
-            filename: "heart_rate.bin",
-            sampleCount: hrRecorder.sampleCount,
-            sampleRateHz: nil,
-            format: "hr_v1"
-        )
-        let manifest = SessionManifest(
-            id: id,
-            startedAt: started,
-            endedAt: ended,
-            deviceName: device.name,
-            deviceModel: device.model,
-            appVersion: appVersion,
-            sources: [imuEntry, hrEntry]
-        )
-        try SessionStorage.shared.writeManifest(manifest, sessionURL: directory)
+    private func transferArtifactsToPhone(directory: URL, sessionID: UUID) {
+        let connection = WatchConnection.shared
+        let imuURL = directory.appendingPathComponent("watch_imu.bin")
+        let hrURL = directory.appendingPathComponent("heart_rate.bin")
+        if FileManager.default.fileExists(atPath: imuURL.path) {
+            connection.transferSessionFile(imuURL, filename: "watch_imu.bin", sessionID: sessionID)
+        }
+        if FileManager.default.fileExists(atPath: hrURL.path) {
+            connection.transferSessionFile(hrURL, filename: "heart_rate.bin", sessionID: sessionID)
+        }
     }
 }
 
@@ -211,5 +236,19 @@ extension WatchRecordingController: HKLiveWorkoutBuilderDelegate {
         didCollectDataOf collectedTypes: Set<HKSampleType>
     ) {
         // Пульс пишем сами через HKAnchoredObjectQuery; builder нужен только чтобы часы держали датчики активными.
+    }
+}
+
+extension WatchRecordingController: WatchConnectionDelegate {
+    func watchConnection(_ connection: WatchConnection, didReceiveStart sessionID: UUID, startedAt: Date) {
+        startFromPhone(sessionID: sessionID, startedAt: startedAt)
+    }
+
+    func watchConnection(_ connection: WatchConnection, didReceiveStop sessionID: UUID) {
+        stopFromPhone(sessionID: sessionID)
+    }
+
+    func watchConnection(_ connection: WatchConnection, reachabilityChanged isReachable: Bool) {
+        self.phoneConnected = isReachable
     }
 }

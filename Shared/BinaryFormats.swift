@@ -1,7 +1,8 @@
 import Foundation
 
 /// Фиксированный layout бинарной записи семпла IMU. Little-endian, packed.
-/// 96 байт на семпл. При 100 Гц: 9.6 КБ/с ≈ 34 МБ/час.
+/// 88 байт на семпл (1×UInt64 + 10×Double, естественное выравнивание по 8 без хвостового padding).
+/// При 100 Гц: 8.8 КБ/с ≈ 31 МБ/час.
 struct IMUSampleBinary {
     var timestampNs: UInt64
     var userAccelX: Double
@@ -15,7 +16,7 @@ struct IMUSampleBinary {
     var attitudeQY: Double
     var attitudeQZ: Double
 
-    static let byteSize: Int = 96
+    static let byteSize: Int = 88
 }
 
 /// Бинарная запись одного значения пульса.
