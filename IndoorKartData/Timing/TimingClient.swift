@@ -53,6 +53,22 @@ final class TimingClient: ObservableObject {
     }
     @Published private(set) var lapHistory: [LapEvent] = []
 
+    /// Любой Comp от любого карта. Нужен для post-session восстановления карты гонки,
+    /// детекции обгонов, валидации chaser gap. Buffer ограничен чтобы не ела память.
+    struct PassEvent: Identifiable {
+        let id = UUID()
+        let wallTime: Date
+        let raceTimeMs: Int
+        let kartNumber: String?
+        let lapNumber: Int?
+        let lastLapMs: Int?
+        let bestLapMs: Int?
+        let position: Int?
+        let gapToLeaderMs: Int?
+    }
+    @Published private(set) var allPasses: [PassEvent] = []
+    private let allPassesMax: Int = 5000
+
     // MARK: - Filter
 
     // При смене номера карта чистим агрегированный state, но соединение не трогаем —
@@ -197,6 +213,7 @@ final class TimingClient: ObservableObject {
             compCount += 1
             if let comp = decode(CompetitorCommand.self, from: env.Command) {
                 lastCompKartSeen = comp.rn ?? comp.nn ?? comp.fn
+                recordPassEvent(comp, raceTimeMs: env.Time)
                 // Порядок важен: сначала проверяем chaser против прежнего pending,
                 // потом (если наш) ОБНОВЛЯЕМ pending этим пассажем. Иначе наш же
                 // Comp попадёт в чaser-match (gap=0).
@@ -205,6 +222,29 @@ final class TimingClient: ObservableObject {
             }
         default:
             break
+        }
+    }
+
+    private func recordPassEvent(_ comp: CompetitorCommand, raceTimeMs: Int) {
+        // Нормализованный номер карта: предпочитаем числовые rn/nn, fallback на fn (с префиксом).
+        let kart: String? = {
+            if let rn = comp.rn, !rn.isEmpty { return rn }
+            if let nn = comp.nn, !nn.isEmpty { return nn }
+            return comp.fn
+        }()
+        let event = PassEvent(
+            wallTime: Date(),
+            raceTimeMs: raceTimeMs,
+            kartNumber: kart,
+            lapNumber: comp.lc,
+            lastLapMs: comp.ll,
+            bestLapMs: comp.bl,
+            position: comp.pos,
+            gapToLeaderMs: comp.ld?.Time
+        )
+        allPasses.append(event)
+        if allPasses.count > allPassesMax {
+            allPasses.removeFirst(allPasses.count - allPassesMax)
         }
     }
 

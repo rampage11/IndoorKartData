@@ -26,21 +26,35 @@ final class TimingRecorder {
         let chaserGapMs: Int?
     }
 
+    struct PassRecord: Codable {
+        let wallTime: Date
+        let raceTimeMs: Int
+        let kartNumber: String?
+        let lapNumber: Int?
+        let lastLapMs: Int?
+        let bestLapMs: Int?
+        let position: Int?
+        let gapToLeaderMs: Int?
+    }
+
     struct Artifact: Codable {
         let raceID: String?
         let kartNumber: String?
         let laps: [LapRecord]
         let flags: [FlagChange]
+        let allPasses: [PassRecord]  // Comp от любого карта — для post-session анализа
     }
 
     private var laps: [LapRecord] = []
     private var flags: [FlagChange] = []
+    private var passes: [PassRecord] = []
     private var lastFlag: String?
     private var lastSeenLapCount: Int = 0
 
     private var lapObserver: AnyCancellable?
     private var flagObserver: AnyCancellable?
     private var chaserObserver: AnyCancellable?
+    private var passesObserver: AnyCancellable?
 
     private var sessionURL: URL?
 
@@ -48,6 +62,7 @@ final class TimingRecorder {
         self.sessionURL = sessionURL
         laps.removeAll()
         flags.removeAll()
+        passes.removeAll()
         lastFlag = nil
         lastSeenLapCount = 0
 
@@ -69,6 +84,27 @@ final class TimingRecorder {
                         position: ev.position,
                         gapToLeaderMs: timing.gapToLeaderMs,
                         chaserGapMs: nil   // проставим позже, когда преследователь пересечёт отсечку
+                    ))
+                }
+            }
+
+        // Все Comp'ы — для post-session анализа (карта гонки, обгоны, валидация).
+        // $allPasses публикуется incremental; копируем новые entries.
+        passesObserver = timing.$allPasses
+            .sink { [weak self] events in
+                guard let self else { return }
+                guard events.count > self.passes.count else { return }
+                let fresh = events.suffix(from: self.passes.count)
+                for ev in fresh {
+                    self.passes.append(PassRecord(
+                        wallTime: ev.wallTime,
+                        raceTimeMs: ev.raceTimeMs,
+                        kartNumber: ev.kartNumber,
+                        lapNumber: ev.lapNumber,
+                        lastLapMs: ev.lastLapMs,
+                        bestLapMs: ev.bestLapMs,
+                        position: ev.position,
+                        gapToLeaderMs: ev.gapToLeaderMs
                     ))
                 }
             }
@@ -115,20 +151,23 @@ final class TimingRecorder {
         lapObserver?.cancel()
         flagObserver?.cancel()
         chaserObserver?.cancel()
+        passesObserver?.cancel()
         lapObserver = nil
         flagObserver = nil
         chaserObserver = nil
+        passesObserver = nil
 
         guard let sessionURL else { return false }
         // Ничего не писали, не плодим пустые файлы.
-        if laps.isEmpty, flags.isEmpty { return false }
+        if laps.isEmpty, flags.isEmpty, passes.isEmpty { return false }
 
         let timing = TimingClient.shared
         let artifact = Artifact(
             raceID: timing.currentRaceID,
             kartNumber: timing.kartNumber,
             laps: laps,
-            flags: flags
+            flags: flags,
+            allPasses: passes
         )
 
         let encoder = JSONEncoder()
