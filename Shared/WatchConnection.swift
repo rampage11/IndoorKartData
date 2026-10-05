@@ -9,6 +9,7 @@ enum WatchMessageKey {
     static let ack = "ack"
     static let error = "error"
     static let steeringAngle = "steeringAngleRad"
+    static let watchWristRateY = "watchWristRateY"
     static let lastLapMs = "lastLapMs"
     static let kartNumber = "kartNumber"
 }
@@ -27,7 +28,7 @@ protocol WatchConnectionDelegate: AnyObject {
     @MainActor func watchConnection(_ connection: WatchConnection, didReceiveStop sessionID: UUID)
     @MainActor func watchConnection(_ connection: WatchConnection, didReceiveFile url: URL, filename: String, sessionID: UUID)
     @MainActor func watchConnection(_ connection: WatchConnection, reachabilityChanged isReachable: Bool)
-    @MainActor func watchConnection(_ connection: WatchConnection, steeringAngleChanged radians: Double)
+    @MainActor func watchConnection(_ connection: WatchConnection, steeringAngleChanged radians: Double, wristRateY: Double)
     @MainActor func watchConnection(_ connection: WatchConnection, lastLapReceivedMs ms: Int)
     @MainActor func watchConnection(_ connection: WatchConnection, kartNumberChanged number: Int)
 }
@@ -37,7 +38,7 @@ extension WatchConnectionDelegate {
     @MainActor func watchConnection(_ connection: WatchConnection, didReceiveStop sessionID: UUID) {}
     @MainActor func watchConnection(_ connection: WatchConnection, didReceiveFile url: URL, filename: String, sessionID: UUID) {}
     @MainActor func watchConnection(_ connection: WatchConnection, reachabilityChanged isReachable: Bool) {}
-    @MainActor func watchConnection(_ connection: WatchConnection, steeringAngleChanged radians: Double) {}
+    @MainActor func watchConnection(_ connection: WatchConnection, steeringAngleChanged radians: Double, wristRateY: Double = 0) {}
     @MainActor func watchConnection(_ connection: WatchConnection, lastLapReceivedMs ms: Int) {}
     @MainActor func watchConnection(_ connection: WatchConnection, kartNumberChanged number: Int) {}
 }
@@ -113,13 +114,15 @@ final class WatchConnection: NSObject {
         return send(payload: payload, reply: nil)
     }
 
-    // Живой стрим угла поворота запястья. Шлём только если iPhone reachable;
-    // в очередь не ставим, устаревший угол нас не интересует.
-    func sendSteeringAngle(_ radians: Double) {
+    // Живой стрим: raw attitude.yaw + текущая rotationRate.y (для детектора
+    // неподвижности запястья на iPhone-стороне). Шлём только если reachable;
+    // устаревшие значения не нужны.
+    func sendSteeringAngle(_ yawRadians: Double, wristRateY: Double = 0) {
         guard let session, session.activationState == .activated, session.isReachable else { return }
         let payload: [String: Any] = [
             WatchMessageKey.command: WatchCommand.steering,
-            WatchMessageKey.steeringAngle: radians
+            WatchMessageKey.steeringAngle: yawRadians,
+            WatchMessageKey.watchWristRateY: wristRateY
         ]
         session.sendMessage(payload, replyHandler: nil, errorHandler: nil)
     }
@@ -234,8 +237,9 @@ extension WatchConnection: WCSessionDelegate {
         // steering: не требует sessionID, прилетает 20Гц, обрабатываем отдельно без ack.
         if command == WatchCommand.steering {
             if let angle = message[WatchMessageKey.steeringAngle] as? Double {
+                let wristRate = message[WatchMessageKey.watchWristRateY] as? Double ?? 0
                 Task { @MainActor in
-                    self.delegate?.watchConnection(self, steeringAngleChanged: angle)
+                    self.delegate?.watchConnection(self, steeringAngleChanged: angle, wristRateY: wristRate)
                 }
             }
             return

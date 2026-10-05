@@ -30,16 +30,20 @@ final class RecordingController: ObservableObject {
 
     // Steering widget state (считается на iPhone, не на часах):
     // relativeYaw = watchYaw - iphoneYaw компенсирует поворот тела/карта.
-    // referenceYaw = значение relativeYaw в момент последней прямой,
-    // калибруется автоматически детектором ниже.
+    // referenceYaw = значение relativeYaw в момент когда рука реально
+    // неподвижна (детектор по watchGyroY).
     private var latestIphoneYaw: Double?
     private var latestWatchYaw: Double?
     private var steeringReferenceRel: Double?
-    // Детектор прямой: подсчёт подряд идущих "спокойных" семплов iPhone IMU.
-    private var straightSampleStreak: Int = 0
-    private let straightSampleThreshold: Int = 150   // 100Гц × 1.5 сек
-    private let straightYawRateThresholdRad: Double = 0.17   // ~10°/с
-    private let straightLateralGThreshold: Double = 0.1      // |horizontal userAccel|
+    // Детектор неподвижности руки: считаем подряд идущие семплы с низкой
+    // watchGyroY. Watch шлёт нам 20 Гц → 30 семплов = 1.5 сек.
+    private var wristStillStreak: Int = 0
+    private let wristStillThreshold: Int = 30
+    private let wristStillRateRad: Double = Double.pi / 180 * 5  // 5°/с
+    // Минимальный интервал между рекалибровками, чтобы не затаптывать
+    // реальные движения руля на долгих "прямых".
+    private var lastSteeringCalibrationTs: TimeInterval = -.infinity
+    private let minSecondsBetweenCalibs: TimeInterval = 15.0
 
     // Номер карта. 0 = не задан. Храним в UserDefaults, синкаем с часами
     // через applicationContext.
@@ -110,40 +114,46 @@ final class RecordingController: ObservableObject {
     }
 
     #if os(iOS)
-    // Вызывается из imuRecorder.onLiveSample (motion queue) на каждом семпле
-    // iPhone IMU. Обновляет latestIphoneYaw и запускает детектор прямых.
+    // iPhone IMU — только для latestIphoneYaw (референс "тело пилота" для
+    // вычитания из watchYaw). Калибровка steering теперь живёт в
+    // onWatchSteeringSample ниже — там детектор по watchGyroY.
     private nonisolated func processIphoneLiveSample(_ motion: CMDeviceMotion) {
         let yaw = motion.attitude.yaw
-        // "Прямая": малая ротация вокруг гравитации + малая горизонтальная G.
-        // В reference-frame xArbitraryZVertical rotationRate.z ≈ yaw rate тела.
-        let yawRate = abs(motion.rotationRate.z)
-        let lateralG = sqrt(motion.userAcceleration.x * motion.userAcceleration.x +
-                            motion.userAcceleration.y * motion.userAcceleration.y)
-
         Task { @MainActor in
             self.latestIphoneYaw = yaw
-            if yawRate < self.straightYawRateThresholdRad && lateralG < self.straightLateralGThreshold {
-                self.straightSampleStreak += 1
-                if self.straightSampleStreak >= self.straightSampleThreshold {
-                    // Устоялись на прямой — рекалибруем референс на текущий rel.
-                    if let wy = self.latestWatchYaw, let ipy = self.latestIphoneYaw {
-                        self.steeringReferenceRel = Self.unwrapAngle(wy - ipy)
-                    }
-                    // Удерживаем streak на пороге чтобы не рекалибровать на каждом семпле прямой.
-                    self.straightSampleStreak = self.straightSampleThreshold
-                }
-            } else {
-                self.straightSampleStreak = 0
-            }
             self.recomputeSteering()
         }
+    }
+
+    private func onWatchSteeringSample(watchYaw: Double, wristRateY: Double) {
+        latestWatchYaw = watchYaw
+
+        // Детектор "рука на руле неподвижна" — именно он честно отражает
+        // "руль не крутится прямо сейчас" (не важно под каким углом; но
+        // если streak достаточно долгий, подавляющая часть сессии приходится
+        // на прямые → детектор пикает именно там).
+        if abs(wristRateY) < wristStillRateRad {
+            wristStillStreak += 1
+        } else {
+            wristStillStreak = 0
+        }
+
+        let now = Date().timeIntervalSince1970
+        if wristStillStreak >= wristStillThreshold,
+           now - lastSteeringCalibrationTs >= minSecondsBetweenCalibs {
+            if let wy = latestWatchYaw, let ipy = latestIphoneYaw {
+                steeringReferenceRel = Self.unwrapAngle(wy - ipy)
+                lastSteeringCalibrationTs = now
+            }
+        }
+        recomputeSteering()
     }
 
     private func recomputeSteering() {
         guard let wy = latestWatchYaw, let ipy = latestIphoneYaw else { return }
         let rel = Self.unwrapAngle(wy - ipy)
         guard let ref = steeringReferenceRel else {
-            // До первой калибровки на прямой показываем 0, не вводим пилота в заблуждение.
+            // До первой калибровки показываем 0, не вводим пилота в заблуждение.
             steeringAngleRadians = 0
             return
         }
@@ -586,11 +596,11 @@ extension RecordingController: WatchConnectionDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: work)
     }
 
-    func watchConnection(_ connection: WatchConnection, steeringAngleChanged radians: Double) {
-        // Watch теперь шлёт raw attitude.yaw, не калиброванный delta.
-        // Храним последнее значение и пересчитываем steering ниже.
-        self.latestWatchYaw = radians
-        self.recomputeSteering()
+    func watchConnection(_ connection: WatchConnection, steeringAngleChanged radians: Double, wristRateY: Double) {
+        // Watch шлёт raw attitude.yaw + текущий rotationRate.y. iPhone-сторона
+        // держит детектор "рука неподвижна" и рекалибрует референс не чаще
+        // раза в 15 сек.
+        onWatchSteeringSample(watchYaw: radians, wristRateY: wristRateY)
     }
 
     func watchConnection(_ connection: WatchConnection, kartNumberChanged number: Int) {

@@ -204,12 +204,16 @@ final class WatchRecordingController: NSObject, ObservableObject {
 
     private func integrateAndMaybeSendSteering(_ motion: CMDeviceMotion) {
         guard isRecording else { return }
-        // Шлём сырой yaw — iPhone-сторона сама вычитает свой yaw и калибрует
-        // через детектор прямых.
+        // Шлём raw yaw + rotationRate.y: iPhone-сторона использует rate для
+        // детектора неподвижности запястья ("руль не крутится сейчас" ≠
+        // "машина едет прямо").
         steeringSampleCounter += 1
         if steeringSampleCounter >= steeringDownsample {
             steeringSampleCounter = 0
-            WatchConnection.shared.sendSteeringAngle(motion.attitude.yaw)
+            WatchConnection.shared.sendSteeringAngle(
+                motion.attitude.yaw,
+                wristRateY: motion.rotationRate.y
+            )
         }
     }
 
