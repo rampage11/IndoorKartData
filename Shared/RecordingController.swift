@@ -68,6 +68,11 @@ final class RecordingController: ObservableObject {
     // Подписки на TimingClient
     private var timingLastLapObserver: AnyCancellable?
     private var timingChaserObserver: AnyCancellable?
+
+    // Debounce для watchConnected: isReachable щёлкает true/false при каждом
+    // подъёме/опускании запястья быстрее чем за секунду. В UI показываем
+    // только устойчивые смены состояния (prolonged ≥ 1 сек).
+    private var pendingWatchReachabilityWork: DispatchWorkItem?
     #endif
 
     init() {
@@ -484,7 +489,20 @@ extension RecordingController: WatchConnectionDelegate {
     }
 
     func watchConnection(_ connection: WatchConnection, reachabilityChanged isReachable: Bool) {
-        self.watchConnected = isReachable
+        // true → применяем сразу (пилоту важно знать что связь появилась).
+        // false → откладываем на 1 сек; если за это время прилетит true обратно,
+        // badge не мигает.
+        pendingWatchReachabilityWork?.cancel()
+        pendingWatchReachabilityWork = nil
+        if isReachable {
+            self.watchConnected = true
+            return
+        }
+        let work = DispatchWorkItem { [weak self] in
+            self?.watchConnected = false
+        }
+        pendingWatchReachabilityWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: work)
     }
 
     func watchConnection(_ connection: WatchConnection, steeringAngleChanged radians: Double) {
