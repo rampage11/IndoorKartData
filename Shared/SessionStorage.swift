@@ -66,4 +66,35 @@ final class SessionStorage {
     func deleteSession(sessionURL: URL) throws {
         try fileManager.removeItem(at: sessionURL)
     }
+
+    /// Эффективный список источников: manifest + файлы на диске.
+    /// Needed because transferFile с часов приходит асинхронно и иногда
+    /// позже чем мы успели записать manifest при stop.
+    func effectiveSources(for sessionURL: URL, manifestSources: [DataSourceEntry]) -> [DataSourceEntry] {
+        var out = manifestSources
+        let fm = FileManager.default
+
+        func addIfPresent(filename: String, kind: DataSourceKind, rateHz: Double?, format: String) {
+            guard fm.fileExists(atPath: sessionURL.appendingPathComponent(filename).path) else { return }
+            if out.contains(where: { $0.filename == filename }) { return }
+            out.append(DataSourceEntry(kind: kind, filename: filename, sampleCount: nil, sampleRateHz: rateHz, format: format))
+        }
+
+        addIfPresent(filename: "watch_imu.bin", kind: .watchIMU, rateHz: 100.0, format: "imu_v1")
+        addIfPresent(filename: "heart_rate.bin", kind: .heartRate, rateHz: nil, format: "hr_v1")
+        addIfPresent(filename: "timing.json", kind: .timing, rateHz: nil, format: "timing_v1")
+        return out
+    }
+
+    /// Если на диске есть источники, которых нет в manifest.json — дописывает их.
+    /// Возвращает обновлённый manifest. No-op если ничего нового не нашлось.
+    func healManifest(sessionURL: URL) throws -> SessionManifest {
+        var manifest = try loadManifest(sessionURL: sessionURL)
+        let effective = effectiveSources(for: sessionURL, manifestSources: manifest.sources)
+        if effective.count != manifest.sources.count {
+            manifest.sources = effective
+            try writeManifest(manifest, sessionURL: sessionURL)
+        }
+        return manifest
+    }
 }

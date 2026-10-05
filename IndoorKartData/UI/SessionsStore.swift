@@ -15,9 +15,12 @@ final class SessionsStore: ObservableObject {
         do {
             let urls = try SessionStorage.shared.listSessions()
             let loaded: [Item] = urls.compactMap { url in
-                guard let manifest = try? SessionStorage.shared.loadManifest(sessionURL: url) else {
-                    return nil
-                }
+                // healManifest сначала — дописывает в manifest все файлы которые
+                // физически есть на диске. Это закрывает окно, когда watch-файлы
+                // прилетели после stop и не попали в sources.
+                let manifest = (try? SessionStorage.shared.healManifest(sessionURL: url))
+                    ?? (try? SessionStorage.shared.loadManifest(sessionURL: url))
+                guard let manifest else { return nil }
                 let duration: TimeInterval? = manifest.endedAt.map { $0.timeIntervalSince(manifest.startedAt) }
                 return Item(id: manifest.id, url: url, manifest: manifest, durationSeconds: duration)
             }

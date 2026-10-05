@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SessionDetailScreen: View {
     let item: SessionsStore.Item
+    @State private var effectiveSources: [DataSourceEntry] = []
 
     var body: some View {
         List {
@@ -26,14 +27,17 @@ struct SessionDetailScreen: View {
                 infoRow(label: "Устройство", value: item.manifest.deviceName)
                 infoRow(label: "Модель", value: item.manifest.deviceModel)
                 infoRow(label: "Версия", value: item.manifest.appVersion)
+                if let kart = item.manifest.kartNumber {
+                    infoRow(label: "Карт", value: "\(kart)")
+                }
             }
 
             Section("Источники") {
-                if item.manifest.sources.isEmpty {
+                if effectiveSources.isEmpty {
                     Text("Нет данных")
                         .foregroundStyle(.secondary)
                 } else {
-                    ForEach(item.manifest.sources, id: \.filename) { source in
+                    ForEach(effectiveSources, id: \.filename) { source in
                         SourceRow(sessionURL: item.url, entry: source)
                     }
                 }
@@ -55,6 +59,19 @@ struct SessionDetailScreen: View {
         }
         .navigationTitle("Сессия")
         .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            // Heal manifest at view time: watch-файлы часто прилетают через
+            // transferFile ПОСЛЕ стопа и не попадают в manifest. UI сканирует
+            // диск и дописывает их в manifest если надо.
+            if let healed = try? SessionStorage.shared.healManifest(sessionURL: item.url) {
+                effectiveSources = healed.sources
+            } else {
+                effectiveSources = SessionStorage.shared.effectiveSources(
+                    for: item.url,
+                    manifestSources: item.manifest.sources
+                )
+            }
+        }
     }
 
     private func infoRow(label: String, value: String) -> some View {
