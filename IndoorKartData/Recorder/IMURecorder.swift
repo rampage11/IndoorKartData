@@ -16,6 +16,11 @@ final class IMURecorder {
     private var fileURL: URL?
     private var sampleCount: Int = 0
 
+    // Коллбэк для живой подписки на поток CMDeviceMotion. Нужен для steering-
+    // виджета: iPhone yaw используется как референс "тело пилота" чтобы
+    // вычислить wrist-relative yaw. Вызывается на motion queue.
+    var onLiveSample: ((CMDeviceMotion) -> Void)?
+
     // Привязка CMDeviceMotion.timestamp (сек. с момента boot) к абсолютному времени
     // нужна только если потребуется кросс-коррелировать с другими источниками;
     // внутри файла сохраняем монотонный ns от boot, этого достаточно для анализа.
@@ -72,6 +77,7 @@ final class IMURecorder {
                     // Молча пропускаем сбой записи одного семпла, чтобы не рушить поток.
                 }
             }
+            self.onLiveSample?(motion)
         }
     }
 

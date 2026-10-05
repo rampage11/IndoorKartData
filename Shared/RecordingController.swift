@@ -2,6 +2,7 @@ import Foundation
 import Combine
 #if os(iOS)
 import UIKit
+import CoreMotion
 #endif
 
 @MainActor
@@ -26,6 +27,19 @@ final class RecordingController: ObservableObject {
     private var watchIMUSampleCount: Int?
     private var heartRateSampleCount: Int?
     private var audioStarted: Bool = false
+
+    // Steering widget state (считается на iPhone, не на часах):
+    // relativeYaw = watchYaw - iphoneYaw компенсирует поворот тела/карта.
+    // referenceYaw = значение relativeYaw в момент последней прямой,
+    // калибруется автоматически детектором ниже.
+    private var latestIphoneYaw: Double?
+    private var latestWatchYaw: Double?
+    private var steeringReferenceRel: Double?
+    // Детектор прямой: подсчёт подряд идущих "спокойных" семплов iPhone IMU.
+    private var straightSampleStreak: Int = 0
+    private let straightSampleThreshold: Int = 150   // 100Гц × 1.5 сек
+    private let straightYawRateThresholdRad: Double = 0.17   // ~10°/с
+    private let straightLateralGThreshold: Double = 0.1      // |horizontal userAccel|
 
     // Номер карта. 0 = не задан. Храним в UserDefaults, синкаем с часами
     // через applicationContext.
@@ -96,6 +110,53 @@ final class RecordingController: ObservableObject {
     }
 
     #if os(iOS)
+    // Вызывается из imuRecorder.onLiveSample (motion queue) на каждом семпле
+    // iPhone IMU. Обновляет latestIphoneYaw и запускает детектор прямых.
+    private nonisolated func processIphoneLiveSample(_ motion: CMDeviceMotion) {
+        let yaw = motion.attitude.yaw
+        // "Прямая": малая ротация вокруг гравитации + малая горизонтальная G.
+        // В reference-frame xArbitraryZVertical rotationRate.z ≈ yaw rate тела.
+        let yawRate = abs(motion.rotationRate.z)
+        let lateralG = sqrt(motion.userAcceleration.x * motion.userAcceleration.x +
+                            motion.userAcceleration.y * motion.userAcceleration.y)
+
+        Task { @MainActor in
+            self.latestIphoneYaw = yaw
+            if yawRate < self.straightYawRateThresholdRad && lateralG < self.straightLateralGThreshold {
+                self.straightSampleStreak += 1
+                if self.straightSampleStreak >= self.straightSampleThreshold {
+                    // Устоялись на прямой — рекалибруем референс на текущий rel.
+                    if let wy = self.latestWatchYaw, let ipy = self.latestIphoneYaw {
+                        self.steeringReferenceRel = Self.unwrapAngle(wy - ipy)
+                    }
+                    // Удерживаем streak на пороге чтобы не рекалибровать на каждом семпле прямой.
+                    self.straightSampleStreak = self.straightSampleThreshold
+                }
+            } else {
+                self.straightSampleStreak = 0
+            }
+            self.recomputeSteering()
+        }
+    }
+
+    private func recomputeSteering() {
+        guard let wy = latestWatchYaw, let ipy = latestIphoneYaw else { return }
+        let rel = Self.unwrapAngle(wy - ipy)
+        guard let ref = steeringReferenceRel else {
+            // До первой калибровки на прямой показываем 0, не вводим пилота в заблуждение.
+            steeringAngleRadians = 0
+            return
+        }
+        steeringAngleRadians = Self.unwrapAngle(rel - ref)
+    }
+
+    private static func unwrapAngle(_ a: Double) -> Double {
+        var x = a
+        while x > .pi { x -= 2 * .pi }
+        while x < -.pi { x += 2 * .pi }
+        return x
+    }
+
     private func subscribeToTiming() {
         // Каждый новый lastLapMs — на часы, в голосовое оповещение (если
         // включено), и в lapHistory TimingRecorder (сам подписан отдельно).
@@ -123,7 +184,24 @@ final class RecordingController: ObservableObject {
                     }
                 }
             }
+        // Пересечение финишной линии — хороший момент рекалибровать референс
+        // руля: пит-стрейт прямой, а на треках где pit at finish пилот как раз
+        // проезжает мимо прямо. Это дополняет авто-детектор прямых.
+        TimingClient.shared.$lastLapMs
+            .compactMap { $0 }
+            .removeDuplicates()
+            .sink { [weak self] _ in
+                guard let self else { return }
+                Task { @MainActor in
+                    if let wy = self.latestWatchYaw, let ipy = self.latestIphoneYaw {
+                        self.steeringReferenceRel = Self.unwrapAngle(wy - ipy)
+                    }
+                }
+            }
+            .store(in: &timingSubs)
     }
+
+    private var timingSubs: Set<AnyCancellable> = []
     #endif
 
     func start() {
@@ -201,6 +279,9 @@ final class RecordingController: ObservableObject {
             self.lastError = "IMU не доступен: \(error.localizedDescription)"
             try? FileManager.default.removeItem(at: sessionURL)
             return
+        }
+        imuRecorder.onLiveSample = { [weak self] motion in
+            self?.processIphoneLiveSample(motion)
         }
 
         // Audio опционален: если iOS не отдал микрофон (background-cold start),
@@ -506,7 +587,10 @@ extension RecordingController: WatchConnectionDelegate {
     }
 
     func watchConnection(_ connection: WatchConnection, steeringAngleChanged radians: Double) {
-        self.steeringAngleRadians = radians
+        // Watch теперь шлёт raw attitude.yaw, не калиброванный delta.
+        // Храним последнее значение и пересчитываем steering ниже.
+        self.latestWatchYaw = radians
+        self.recomputeSteering()
     }
 
     func watchConnection(_ connection: WatchConnection, kartNumberChanged number: Int) {

@@ -43,22 +43,13 @@ final class WatchRecordingController: NSObject, ObservableObject {
     private var timer: Timer?
     private var startedByPhone: Bool = false
 
-    // Угол поворота руля — абсолютный, через CMAttitude.yaw в reference-frame
-    // xArbitraryZVertical (Z = гравитация). Delta = currentYaw - refYaw,
-    // unwrap в [-π, π]. Этот подход физически не дрейфует: Apple SF-пайплайн
-    // компенсирует gyro bias через accel+mag. Старая версия интегрировала
-    // gyro и накапливала ошибку (79° за 4 мин даже на прямой).
-    private var steeringRefYaw: Double = 0
-    private var steeringLastDelta: Double = 0
+    // Watch шлёт сырой motion.attitude.yaw (НЕ калиброванный delta). iPhone
+    // вычитает свой yaw → получает wrist-относительно-тела, который сам
+    // калибрует через детектор прямых. Это нужно потому что при повороте
+    // авто/карта всё тело вращается вместе с машиной — абсолютный watch yaw
+    // меняется БЕЗ изменения руля. Нам нужна разница.
     private var steeringSampleCounter: Int = 0
     private let steeringDownsample: Int = 5  // 100Hz → 20Hz
-
-    // Калибровка reference yaw: ждём статики (|rotationRate.y| < threshold)
-    // steeringBiasWindow семплов подряд, усредняем yaw в них → refYaw.
-    private var steeringYawSamples: [Double] = []
-    private var steeringBiasReady: Bool = false
-    private let steeringBiasWindow: Int = 100  // ~1 сек при 100Гц
-    private let steeringStationaryThreshold: Double = 0.05  // rad/s (~2.9°/с)
 
     override init() {
         self.kartNumber = UserDefaults.standard.integer(forKey: Self.kartNumberKey)
@@ -179,12 +170,8 @@ final class WatchRecordingController: NSObject, ObservableObject {
             self?.currentBPM = bpm
         }
 
-        // Сбрасываем yaw-reference и калибровку.
-        steeringRefYaw = 0
-        steeringLastDelta = 0
+        // iPhone-сторона теперь сама считает wrist-relative yaw и калибрует.
         steeringSampleCounter = 0
-        steeringYawSamples = []
-        steeringBiasReady = false
         imuRecorder.onLiveSample = { [weak self] motion in
             self?.processLiveSample(motion)
         }
@@ -217,45 +204,13 @@ final class WatchRecordingController: NSObject, ObservableObject {
 
     private func integrateAndMaybeSendSteering(_ motion: CMDeviceMotion) {
         guard isRecording else { return }
-        // Yaw = ротация вокруг гравитации. Для горизонтального предплечья на
-        // руле изменение yaw ≈ изменение направления предплечья в горизонтальной
-        // плоскости = ≈ изменению угла руля (для рук на 9/3 часа).
-        let currentYaw = motion.attitude.yaw
-
-        // Фаза калибровки: ждём пока |rotationRate.y| < threshold на N подряд
-        // (значит рука реально неподвижна) и усредняем yaw.
-        if !steeringBiasReady {
-            if abs(motion.rotationRate.y) < steeringStationaryThreshold {
-                steeringYawSamples.append(currentYaw)
-                if steeringYawSamples.count >= steeringBiasWindow {
-                    steeringRefYaw = circularMean(steeringYawSamples)
-                    steeringBiasReady = true
-                }
-            } else {
-                steeringYawSamples.removeAll(keepingCapacity: true)
-            }
-            return
-        }
-
-        // Основная ветка: current - ref, unwrap в [-π, π].
-        var delta = currentYaw - steeringRefYaw
-        while delta > .pi { delta -= 2 * .pi }
-        while delta < -.pi { delta += 2 * .pi }
-        steeringLastDelta = delta
-
+        // Шлём сырой yaw — iPhone-сторона сама вычитает свой yaw и калибрует
+        // через детектор прямых.
         steeringSampleCounter += 1
         if steeringSampleCounter >= steeringDownsample {
             steeringSampleCounter = 0
-            WatchConnection.shared.sendSteeringAngle(delta)
+            WatchConnection.shared.sendSteeringAngle(motion.attitude.yaw)
         }
-    }
-
-    private nonisolated func circularMean(_ angles: [Double]) -> Double {
-        // Усреднение углов на окружности через atan2(mean sin, mean cos) —
-        // корректно работает рядом с ±π где обычное среднее сломалось бы.
-        let s = angles.reduce(0.0) { $0 + Foundation.sin($1) }
-        let c = angles.reduce(0.0) { $0 + Foundation.cos($1) }
-        return Foundation.atan2(s, c)
     }
 
     private func finalizeRecording() async {
