@@ -24,6 +24,12 @@ struct SessionManifest: Codable {
     let deviceModel: String
     let appVersion: String
     var sources: [DataSourceEntry]
+    // Контекст для post-session анализа и будущих сравнений между сессиями.
+    // Все optional чтобы не ломать decode старых манифестов.
+    var driverId: UUID?
+    var kartNumber: Int?
+    var timingRaceID: String?
+    var trackName: String?
 }
 
 enum SessionDirectoryName {

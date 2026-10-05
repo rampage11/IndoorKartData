@@ -30,6 +30,19 @@ def _print_summary(session_dir: Path, session: dict[str, Any]) -> None:
     print(f"started: {started}")
     print(f"ended:   {ended}")
     print(f"path:    {session_dir}")
+    # Контекст из обогащённого манифеста (новые optional поля). Старые сессии
+    # этих ключей не имеют — молча пропускаем.
+    extras: list[str] = []
+    if (driver := manifest.get("driverId")):
+        extras.append(f"driver={str(driver)[:8]}")
+    if (kart := manifest.get("kartNumber")):
+        extras.append(f"kart={kart}")
+    if (track := manifest.get("trackName")):
+        extras.append(f"track={track}")
+    if (rid := manifest.get("timingRaceID")):
+        extras.append(f"timingRace={rid[:8]}")
+    if extras:
+        print("ctx:     " + "  ".join(extras))
 
     # Собираем сводку по файлам: берём и manifest, и реально лежащие файлы.
     manifest_by_filename = {s.get("filename"): s for s in manifest.get("sources", [])}

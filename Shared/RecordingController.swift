@@ -41,6 +41,20 @@ final class RecordingController: ObservableObject {
         }
     }
     private static let kartNumberKey = "kartNumber"
+    private static let driverIdKey = "driverId"
+
+    // Стабильный ID пилота: генерируется один раз на устройство, живёт в
+    // UserDefaults. Нужен чтобы сравнивать сессии одного пилота между
+    // собой (в т.ч. в будущем через Supabase).
+    static var persistentDriverID: UUID {
+        if let s = UserDefaults.standard.string(forKey: Self.driverIdKey),
+           let uuid = UUID(uuidString: s) {
+            return uuid
+        }
+        let fresh = UUID()
+        UserDefaults.standard.set(fresh.uuidString, forKey: Self.driverIdKey)
+        return fresh
+    }
 
     // Голосовое оповещение времени круга. true по умолчанию, в UserDefaults.
     @Published var voiceEnabled: Bool {
@@ -312,7 +326,11 @@ final class RecordingController: ObservableObject {
             deviceName: deviceName,
             deviceModel: deviceModel,
             appVersion: appVersion,
-            sources: sources
+            sources: sources,
+            driverId: Self.persistentDriverID,
+            kartNumber: kartNumber > 0 ? kartNumber : nil,
+            timingRaceID: TimingClient.shared.currentRaceID,
+            trackName: nil  // UI выбора трека появится позже; пока nil
         )
 
         do {
@@ -434,7 +452,11 @@ final class RecordingController: ObservableObject {
             deviceName: UIDevice.current.name,
             deviceModel: UIDevice.current.model,
             appVersion: appVersion,
-            sources: []
+            sources: [],
+            driverId: Self.persistentDriverID,
+            kartNumber: kartNumber > 0 ? kartNumber : nil,
+            timingRaceID: nil,
+            trackName: nil
         )
         try? SessionStorage.shared.writeManifest(manifest, sessionURL: dir)
     }
