@@ -197,10 +197,11 @@ final class TimingClient: ObservableObject {
             compCount += 1
             if let comp = decode(CompetitorCommand.self, from: env.Command) {
                 lastCompKartSeen = comp.rn ?? comp.nn ?? comp.fn
-                applyCompetitorIfMatches(comp, raceTimeMs: env.Time)
-                // Любой Comp проверяем на статус «преследователь», даже если
-                // не наш — именно так и ловится карт позади нас.
+                // Порядок важен: сначала проверяем chaser против прежнего pending,
+                // потом (если наш) ОБНОВЛЯЕМ pending этим пассажем. Иначе наш же
+                // Comp попадёт в чaser-match (gap=0).
                 checkChaserPass(comp, raceTimeMs: env.Time)
+                applyCompetitorIfMatches(comp, raceTimeMs: env.Time)
             }
         default:
             break
@@ -208,15 +209,15 @@ final class TimingClient: ObservableObject {
     }
 
     private func checkChaserPass(_ comp: CompetitorCommand, raceTimeMs: Int) {
-        guard let ourTime = pendingOurRaceTimeMs,
-              let ourPos = pendingOurPos,
-              let theirPos = comp.pos,
-              theirPos == ourPos + 1,
-              let theirLap = comp.lc,
-              theirLap >= (pendingOurLap ?? 0) else { return }
-        // Санитар: больше минуты назад — явно не "сразу за нами".
+        guard let ourTime = pendingOurRaceTimeMs else { return }
+        // Себя не считаем — мы не можем быть сзади у самих себя.
+        if let kart = kartNumber, isOurKart(comp, kart: kart) { return }
+        // Любой карт пересекающий отсечку ПОСЛЕ нас в пределах минуты —
+        // физически едет за нами по трассе. Standings/lap count не важны:
+        // если он идёт на круг впереди но пересёк после нас — ему 0.8 сек
+        // осталось до нас, что и нужно знать пилоту.
         let gap = raceTimeMs - ourTime
-        guard gap >= 0, gap < 60_000 else { return }
+        guard gap > 0, gap < 60_000 else { return }
         chaserGapMs = gap
         pendingOurRaceTimeMs = nil
         pendingOurPos = nil
