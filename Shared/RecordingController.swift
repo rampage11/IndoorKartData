@@ -53,6 +53,7 @@ final class RecordingController: ObservableObject {
 
     // Подписки на TimingClient
     private var timingLastLapObserver: AnyCancellable?
+    private var timingChaserObserver: AnyCancellable?
     #endif
 
     init() {
@@ -88,6 +89,18 @@ final class RecordingController: ObservableObject {
                 Task { @MainActor in
                     if self.voiceEnabled {
                         self.voiceAnnouncer.announceLap(ms: ms)
+                    }
+                }
+            }
+        // Дельта до преследователя приходит через несколько секунд после
+        // нашего круга (когда следующий карт пересекает отсечку).
+        timingChaserObserver = TimingClient.shared.$chaserGapMs
+            .compactMap { $0 }
+            .sink { [weak self] gap in
+                guard let self else { return }
+                Task { @MainActor in
+                    if self.voiceEnabled {
+                        self.voiceAnnouncer.announceChaser(gapMs: gap)
                     }
                 }
             }

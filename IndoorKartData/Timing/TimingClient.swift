@@ -31,6 +31,17 @@ final class TimingClient: ObservableObject {
     @Published private(set) var compMineCount: Int = 0
     @Published private(set) var lastCompKartSeen: String?
 
+    // Отрыв до преследователя (мс) на последнем прохождении отсечки.
+    // Публикуется когда следующий карт после нашего пересекает финиш.
+    @Published private(set) var chaserGapMs: Int?
+
+    // Pending-состояние для вычисления отрыва: на нашем Comp сохраняем
+    // raceTime+pos+lap, при следующем Comp от карта с pos=ourPos+1
+    // считаем дельту и чистим pending (one-shot).
+    private var pendingOurRaceTimeMs: Int?
+    private var pendingOurPos: Int?
+    private var pendingOurLap: Int?
+
     struct LapEvent: Identifiable {
         let id = UUID()
         let raceTimeMs: Int
@@ -185,21 +196,46 @@ final class TimingClient: ObservableObject {
         case "Comp":
             compCount += 1
             if let comp = decode(CompetitorCommand.self, from: env.Command) {
-                // Запоминаем номер последнего карта который видели — помогает
-                // понять правильный ли формат (KART/KINDER/etc) и не ошибся
-                // ли пилот с номером.
                 lastCompKartSeen = comp.rn ?? comp.nn ?? comp.fn
                 applyCompetitorIfMatches(comp, raceTimeMs: env.Time)
+                // Любой Comp проверяем на статус «преследователь», даже если
+                // не наш — именно так и ловится карт позади нас.
+                checkChaserPass(comp, raceTimeMs: env.Time)
             }
         default:
             break
         }
     }
 
+    private func checkChaserPass(_ comp: CompetitorCommand, raceTimeMs: Int) {
+        guard let ourTime = pendingOurRaceTimeMs,
+              let ourPos = pendingOurPos,
+              let theirPos = comp.pos,
+              theirPos == ourPos + 1,
+              let theirLap = comp.lc,
+              theirLap >= (pendingOurLap ?? 0) else { return }
+        // Санитар: больше минуты назад — явно не "сразу за нами".
+        let gap = raceTimeMs - ourTime
+        guard gap >= 0, gap < 60_000 else { return }
+        chaserGapMs = gap
+        pendingOurRaceTimeMs = nil
+        pendingOurPos = nil
+        pendingOurLap = nil
+    }
+
     private func applyCompetitorIfMatches(_ comp: CompetitorCommand, raceTimeMs: Int) {
         guard let kart = kartNumber, !kart.isEmpty else { return }
         if !isOurKart(comp, kart: kart) { return }
         compMineCount += 1
+
+        // Это наш пассаж — ставим pending для следующего карта (преследователя).
+        // Старый chaser gap обнуляем — он относился к предыдущему кругу.
+        if let pos = comp.pos, let lc = comp.lc, let ll = comp.ll, ll > 0 {
+            pendingOurRaceTimeMs = raceTimeMs
+            pendingOurPos = pos
+            pendingOurLap = lc
+            chaserGapMs = nil
+        }
 
         if let ll = comp.ll { lastLapMs = ll }
         if let bl = comp.bl { bestLapMs = bl }

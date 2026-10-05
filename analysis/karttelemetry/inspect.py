@@ -76,9 +76,12 @@ def _print_summary(session_dir: Path, session: dict[str, Any]) -> None:
                 m, s_ms = divmod(ms, 1000)
                 mm, s = divmod(m, 60)
                 mark = " *" if ms == best_ms else "  "
+                chaser = lap.get("chaserGapMs")
+                chaser_s = f"  сзади +{chaser/1000:.1f}" if chaser is not None else ""
                 print(
                     f"  lap {lap.get('lapNumber','?'):>3} "
                     f"{mm:02d}:{s:02d}.{s_ms:03d}{mark}  pos={lap.get('position','?')}"
+                    f"{chaser_s}"
                 )
 
     if session.get("_errors"):

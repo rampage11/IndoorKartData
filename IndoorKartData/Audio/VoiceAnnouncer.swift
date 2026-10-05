@@ -22,6 +22,14 @@ final class VoiceAnnouncer {
         synth.speak(utterance)
     }
 
+    func announceChaser(gapMs: Int) {
+        let utterance = AVSpeechUtterance(string: Self.chaserPhrase(for: gapMs))
+        utterance.voice = voice
+        utterance.rate = AVSpeechUtteranceDefaultSpeechRate * 0.95
+        utterance.pitchMultiplier = 1.0
+        synth.speak(utterance)
+    }
+
     func stopAll() {
         synth.stopSpeaking(at: .immediate)
     }
@@ -32,5 +40,13 @@ final class VoiceAnnouncer {
         let seconds = totalMs / 1000
         let tenths = (totalMs % 1000) / 100
         return "\(seconds) и \(tenths)"
+    }
+
+    static func chaserPhrase(for gapMs: Int) -> String {
+        let gap = max(0, gapMs)
+        let seconds = gap / 1000
+        let tenths = (gap % 1000) / 100
+        // "плюс 0 и 8" → "плюс ноль и восемь" (TTS корректно читает).
+        return "плюс \(seconds) и \(tenths)"
     }
 }

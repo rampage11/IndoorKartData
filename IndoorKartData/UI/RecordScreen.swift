@@ -114,6 +114,11 @@ struct RecordScreen: View {
                 Text(String(format: "last lap: %02d:%02d.%03d", m, s, mm))
                     .foregroundStyle(.primary)
             }
+            if let gap = timing.chaserGapMs {
+                let s = gap / 1000
+                let mm = gap % 1000
+                Text(String(format: "сзади: +%d.%03d", s, mm))
+            }
         }
         .font(.caption2.monospaced())
         .foregroundStyle(.secondary)

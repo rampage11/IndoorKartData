@@ -21,6 +21,9 @@ final class TimingRecorder {
         let bestLapMs: Int
         let position: Int
         let gapToLeaderMs: Int?
+        // Дельта до карта позади нас на отсечке. nil если никого нет (мы последние)
+        // или если преследователь ещё не пересёк финиш к моменту этого круга.
+        let chaserGapMs: Int?
     }
 
     struct Artifact: Codable {
@@ -37,6 +40,7 @@ final class TimingRecorder {
 
     private var lapObserver: AnyCancellable?
     private var flagObserver: AnyCancellable?
+    private var chaserObserver: AnyCancellable?
 
     private var sessionURL: URL?
 
@@ -63,8 +67,30 @@ final class TimingRecorder {
                         lapMs: ev.lapMs,
                         bestLapMs: ev.bestLapMs,
                         position: ev.position,
-                        gapToLeaderMs: timing.gapToLeaderMs
+                        gapToLeaderMs: timing.gapToLeaderMs,
+                        chaserGapMs: nil   // проставим позже, когда преследователь пересечёт отсечку
                     ))
+                }
+            }
+
+        // Дельта до преследователя прилетает через несколько секунд ПОСЛЕ
+        // нашего круга — находим последнюю lap-запись и дописываем её.
+        chaserObserver = timing.$chaserGapMs
+            .compactMap { $0 }
+            .sink { [weak self] gap in
+                guard let self, var last = self.laps.last else { return }
+                if last.chaserGapMs == nil {
+                    last = LapRecord(
+                        wallTime: last.wallTime,
+                        raceTimeMs: last.raceTimeMs,
+                        lapNumber: last.lapNumber,
+                        lapMs: last.lapMs,
+                        bestLapMs: last.bestLapMs,
+                        position: last.position,
+                        gapToLeaderMs: last.gapToLeaderMs,
+                        chaserGapMs: gap
+                    )
+                    self.laps[self.laps.count - 1] = last
                 }
             }
 
@@ -88,8 +114,10 @@ final class TimingRecorder {
     func finalize() -> Bool {
         lapObserver?.cancel()
         flagObserver?.cancel()
+        chaserObserver?.cancel()
         lapObserver = nil
         flagObserver = nil
+        chaserObserver = nil
 
         guard let sessionURL else { return false }
         // Ничего не писали, не плодим пустые файлы.
