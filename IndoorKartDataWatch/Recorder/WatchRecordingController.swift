@@ -43,25 +43,22 @@ final class WatchRecordingController: NSObject, ObservableObject {
     private var timer: Timer?
     private var startedByPhone: Bool = false
 
-    // Для живого стрима руля: интегрируем rotationRate.x (твист запястья) и
-    // раз в N семплов отправляем на iPhone.
-    private var steeringAccumRad: Double = 0
-    private var steeringLastSampleTs: TimeInterval?
+    // Угол поворота руля — абсолютный, через CMAttitude.yaw в reference-frame
+    // xArbitraryZVertical (Z = гравитация). Delta = currentYaw - refYaw,
+    // unwrap в [-π, π]. Этот подход физически не дрейфует: Apple SF-пайплайн
+    // компенсирует gyro bias через accel+mag. Старая версия интегрировала
+    // gyro и накапливала ошибку (79° за 4 мин даже на прямой).
+    private var steeringRefYaw: Double = 0
+    private var steeringLastDelta: Double = 0
     private var steeringSampleCounter: Int = 0
     private let steeringDownsample: Int = 5  // 100Hz → 20Hz
 
-    // Антидрейф: собираем окно семплов РЕАЛЬНО неподвижной руки для bias.
-    // Если пилот нажал Старт в движении (например на светофоре с подкатом),
-    // "первая секунда" содержит реальное движение → bias ложный → весь интеграл
-    // дрейфует. Поэтому ждём пока |rate| останется ниже стационарного порога
-    // steeringStationaryThreshold на steeringBiasWindow семплов подряд.
-    private var steeringBiasSamples: [Double] = []
-    private var steeringBias: Double = 0
+    // Калибровка reference yaw: ждём статики (|rotationRate.y| < threshold)
+    // steeringBiasWindow семплов подряд, усредняем yaw в них → refYaw.
+    private var steeringYawSamples: [Double] = []
     private var steeringBiasReady: Bool = false
     private let steeringBiasWindow: Int = 100  // ~1 сек при 100Гц
-    private let steeringStationaryThreshold: Double = 0.05  // rad/s (~2.9°/с) — выше → не статика
-    // Мёртвая зона в rad/s: шум ниже этого порога (~1.1°/с) не копим.
-    private let steeringDeadZone: Double = 0.02
+    private let steeringStationaryThreshold: Double = 0.05  // rad/s (~2.9°/с)
 
     override init() {
         self.kartNumber = UserDefaults.standard.integer(forKey: Self.kartNumberKey)
@@ -182,12 +179,11 @@ final class WatchRecordingController: NSObject, ObservableObject {
             self?.currentBPM = bpm
         }
 
-        // Сбрасываем интегратор руля на нуле и чистим калибровку bias.
-        steeringAccumRad = 0
-        steeringLastSampleTs = nil
+        // Сбрасываем yaw-reference и калибровку.
+        steeringRefYaw = 0
+        steeringLastDelta = 0
         steeringSampleCounter = 0
-        steeringBiasSamples = []
-        steeringBias = 0
+        steeringYawSamples = []
         steeringBiasReady = false
         imuRecorder.onLiveSample = { [weak self] motion in
             self?.processLiveSample(motion)
@@ -221,46 +217,45 @@ final class WatchRecordingController: NSObject, ObservableObject {
 
     private func integrateAndMaybeSendSteering(_ motion: CMDeviceMotion) {
         guard isRecording else { return }
-        let now = motion.timestamp
-        // Используем Y — пронация запястья (ось strap-а часов). Проверено
-        // на реальной сессии вождения (05.10.2026): gy swing ~95° совпал с
-        // физической реальностью "руль не крутился больше 180°", тогда как
-        // gx и gz накопили >1000° дрейфа.
-        let rate = motion.rotationRate.y
+        // Yaw = ротация вокруг гравитации. Для горизонтального предплечья на
+        // руле изменение yaw ≈ изменение направления предплечья в горизонтальной
+        // плоскости = ≈ изменению угла руля (для рук на 9/3 часа).
+        let currentYaw = motion.attitude.yaw
 
-        // Калибровка bias только когда рука РЕАЛЬНО неподвижна.
-        // Если пилот стартанул в движении, "первая секунда" не подходит —
-        // ждём пока |rate| опустится ниже steeringStationaryThreshold на
-        // steeringBiasWindow подряд.
+        // Фаза калибровки: ждём пока |rotationRate.y| < threshold на N подряд
+        // (значит рука реально неподвижна) и усредняем yaw.
         if !steeringBiasReady {
-            if abs(rate) < steeringStationaryThreshold {
-                steeringBiasSamples.append(rate)
-                if steeringBiasSamples.count >= steeringBiasWindow {
-                    steeringBias = steeringBiasSamples.reduce(0, +) / Double(steeringBiasSamples.count)
+            if abs(motion.rotationRate.y) < steeringStationaryThreshold {
+                steeringYawSamples.append(currentYaw)
+                if steeringYawSamples.count >= steeringBiasWindow {
+                    steeringRefYaw = circularMean(steeringYawSamples)
                     steeringBiasReady = true
                 }
             } else {
-                // Движение — сбрасываем накопление, начинаем ждать статику заново.
-                steeringBiasSamples.removeAll(keepingCapacity: true)
+                steeringYawSamples.removeAll(keepingCapacity: true)
             }
-            steeringLastSampleTs = now
             return
         }
 
-        // Основная ветка: вычитаем bias и игнорируем шум в мёртвой зоне.
-        let adjusted = rate - steeringBias
-        if let last = steeringLastSampleTs {
-            let dt = now - last
-            if abs(adjusted) > steeringDeadZone {
-                steeringAccumRad += adjusted * dt
-            }
-        }
-        steeringLastSampleTs = now
+        // Основная ветка: current - ref, unwrap в [-π, π].
+        var delta = currentYaw - steeringRefYaw
+        while delta > .pi { delta -= 2 * .pi }
+        while delta < -.pi { delta += 2 * .pi }
+        steeringLastDelta = delta
+
         steeringSampleCounter += 1
         if steeringSampleCounter >= steeringDownsample {
             steeringSampleCounter = 0
-            WatchConnection.shared.sendSteeringAngle(steeringAccumRad)
+            WatchConnection.shared.sendSteeringAngle(delta)
         }
+    }
+
+    private nonisolated func circularMean(_ angles: [Double]) -> Double {
+        // Усреднение углов на окружности через atan2(mean sin, mean cos) —
+        // корректно работает рядом с ±π где обычное среднее сломалось бы.
+        let s = angles.reduce(0.0) { $0 + Foundation.sin($1) }
+        let c = angles.reduce(0.0) { $0 + Foundation.cos($1) }
+        return Foundation.atan2(s, c)
     }
 
     private func finalizeRecording() async {
