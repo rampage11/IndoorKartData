@@ -19,3 +19,7 @@ IndoorKartDataWatch/IndoorKartDataWatch.entitlements
 # SwiftPM
 .swiftpm/
 Package.resolved
+
+# Отчёты по сессиям — GIF и большие PNG не коммитим
+analysis/reports/**/*.gif
+analysis/reports/**/*.mp4
