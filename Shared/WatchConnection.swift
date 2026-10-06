@@ -21,6 +21,9 @@ enum WatchCommand {
     static let watchStop = "watchStop"
     static let steering = "steering"
     static let lastLap = "lastLap"
+    // Регулярный ping каждые 2 сек когда app открыт — опора для индикатора
+    // "связь жива" на основе last-heard-from, а не flaky isReachable.
+    static let heartbeat = "heartbeat"
 }
 
 protocol WatchConnectionDelegate: AnyObject {
@@ -31,6 +34,9 @@ protocol WatchConnectionDelegate: AnyObject {
     @MainActor func watchConnection(_ connection: WatchConnection, steeringAngleChanged radians: Double, wristRateY: Double)
     @MainActor func watchConnection(_ connection: WatchConnection, lastLapReceivedMs ms: Int)
     @MainActor func watchConnection(_ connection: WatchConnection, kartNumberChanged number: Int)
+    // Любое входящее сообщение (включая heartbeat). Используется для
+    // last-heard-from индикатора, не привязанного к flaky isReachable.
+    @MainActor func watchConnectionDidReceiveAnyMessage(_ connection: WatchConnection)
 }
 
 extension WatchConnectionDelegate {
@@ -41,6 +47,7 @@ extension WatchConnectionDelegate {
     @MainActor func watchConnection(_ connection: WatchConnection, steeringAngleChanged radians: Double, wristRateY: Double = 0) {}
     @MainActor func watchConnection(_ connection: WatchConnection, lastLapReceivedMs ms: Int) {}
     @MainActor func watchConnection(_ connection: WatchConnection, kartNumberChanged number: Int) {}
+    @MainActor func watchConnectionDidReceiveAnyMessage(_ connection: WatchConnection) {}
 }
 
 final class WatchConnection: NSObject {
@@ -61,6 +68,22 @@ final class WatchConnection: NSObject {
         if session.activationState != .activated {
             session.activate()
         }
+        startHeartbeat()
+    }
+
+    private var heartbeatTimer: Timer?
+
+    private func startHeartbeat() {
+        heartbeatTimer?.invalidate()
+        heartbeatTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            self?.sendHeartbeat()
+        }
+    }
+
+    private func sendHeartbeat() {
+        guard let session, session.activationState == .activated, session.isReachable else { return }
+        let payload: [String: Any] = [WatchMessageKey.command: WatchCommand.heartbeat]
+        session.sendMessage(payload, replyHandler: nil, errorHandler: nil)
     }
 
     var isReachable: Bool {
@@ -233,6 +256,17 @@ extension WatchConnection: WCSessionDelegate {
 
     private nonisolated func handleIncoming(_ message: [String: Any], replyHandler: (([String: Any]) -> Void)?) {
         let command = message[WatchMessageKey.command] as? String
+
+        // Любое входящее сообщение обновляет last-heard-from. Это основа
+        // индикатора связи, не привязанного к flaky isReachable.
+        Task { @MainActor in
+            self.delegate?.watchConnectionDidReceiveAnyMessage(self)
+        }
+
+        // Heartbeat — отдельный no-op для просто обновления last-heard-from.
+        if command == WatchCommand.heartbeat {
+            return
+        }
 
         // steering: не требует sessionID, прилетает 20Гц, обрабатываем отдельно без ack.
         if command == WatchCommand.steering {

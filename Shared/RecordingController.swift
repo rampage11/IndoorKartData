@@ -87,10 +87,12 @@ final class RecordingController: ObservableObject {
     private var timingLastLapObserver: AnyCancellable?
     private var timingChaserObserver: AnyCancellable?
 
-    // Debounce для watchConnected: isReachable щёлкает true/false при каждом
-    // подъёме/опускании запястья быстрее чем за секунду. В UI показываем
-    // только устойчивые смены состояния (prolonged ≥ 1 сек).
-    private var pendingWatchReachabilityWork: DispatchWorkItem?
+    // Last-heard-from индикатор (не привязан к flaky isReachable).
+    // Любое входящее сообщение от Watch обновляет timestamp. UI показывает
+    // connected если прошло <5 сек с последнего. Проверяется таймером.
+    private var lastWatchMessageAt: Date?
+    private var connectionCheckTimer: Timer?
+    private let connectionTimeoutSeconds: TimeInterval = 5.0
     #endif
 
     init() {
@@ -101,7 +103,8 @@ final class RecordingController: ObservableObject {
         let connection = WatchConnection.shared
         connection.delegate = self
         connection.activate()
-        self.watchConnected = connection.isReachable
+        self.watchConnected = false  // будет true после первого полученного сообщения
+        startConnectionCheckTimer()
         // Применяем сохранённый номер в TimingClient сразу, чтобы при подключении
         // к SignalR фильтр уже работал.
         if kartNumber > 0 {
@@ -580,20 +583,34 @@ extension RecordingController: WatchConnectionDelegate {
     }
 
     func watchConnection(_ connection: WatchConnection, reachabilityChanged isReachable: Bool) {
-        // true → применяем сразу (пилоту важно знать что связь появилась).
-        // false → откладываем на 1 сек; если за это время прилетит true обратно,
-        // badge не мигает.
-        pendingWatchReachabilityWork?.cancel()
-        pendingWatchReachabilityWork = nil
-        if isReachable {
-            self.watchConnected = true
-            return
+        // isReachable флаг игнорируем — он flaky даже когда оба app открыты
+        // и BT работает. Индикатор переехал на last-heard-from (см.
+        // watchConnectionDidReceiveAnyMessage ниже).
+    }
+
+    func watchConnectionDidReceiveAnyMessage(_ connection: WatchConnection) {
+        lastWatchMessageAt = Date()
+        if !watchConnected {
+            watchConnected = true
         }
-        let work = DispatchWorkItem { [weak self] in
-            self?.watchConnected = false
+    }
+
+    private func startConnectionCheckTimer() {
+        connectionCheckTimer?.invalidate()
+        connectionCheckTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                let fresh: Bool
+                if let last = self.lastWatchMessageAt {
+                    fresh = Date().timeIntervalSince(last) < self.connectionTimeoutSeconds
+                } else {
+                    fresh = false
+                }
+                if self.watchConnected != fresh {
+                    self.watchConnected = fresh
+                }
+            }
         }
-        pendingWatchReachabilityWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: work)
     }
 
     func watchConnection(_ connection: WatchConnection, steeringAngleChanged radians: Double, wristRateY: Double) {

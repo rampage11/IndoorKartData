@@ -51,13 +51,37 @@ final class WatchRecordingController: NSObject, ObservableObject {
     private var steeringSampleCounter: Int = 0
     private let steeringDownsample: Int = 5  // 100Hz → 20Hz
 
+    // Last-heard-from индикатор связи с iPhone (вместо flaky isReachable).
+    private var lastPhoneMessageAt: Date?
+    private var phoneCheckTimer: Timer?
+    private let phoneTimeoutSeconds: TimeInterval = 5.0
+
     override init() {
         self.kartNumber = UserDefaults.standard.integer(forKey: Self.kartNumberKey)
         super.init()
         let connection = WatchConnection.shared
         connection.delegate = self
         connection.activate()
-        self.phoneConnected = connection.isReachable
+        self.phoneConnected = false
+        startPhoneCheckTimer()
+    }
+
+    private func startPhoneCheckTimer() {
+        phoneCheckTimer?.invalidate()
+        phoneCheckTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                let fresh: Bool
+                if let last = self.lastPhoneMessageAt {
+                    fresh = Date().timeIntervalSince(last) < self.phoneTimeoutSeconds
+                } else {
+                    fresh = false
+                }
+                if self.phoneConnected != fresh {
+                    self.phoneConnected = fresh
+                }
+            }
+        }
     }
 
     /// Публичный сеттер для последнего круга — вызывается с iPhone через WCSession.
@@ -326,7 +350,14 @@ extension WatchRecordingController: WatchConnectionDelegate {
     }
 
     func watchConnection(_ connection: WatchConnection, reachabilityChanged isReachable: Bool) {
-        self.phoneConnected = isReachable
+        // Игнорируем — индикатор на last-heard-from, не на флаге.
+    }
+
+    func watchConnectionDidReceiveAnyMessage(_ connection: WatchConnection) {
+        lastPhoneMessageAt = Date()
+        if !phoneConnected {
+            phoneConnected = true
+        }
     }
 
     func watchConnection(_ connection: WatchConnection, lastLapReceivedMs ms: Int) {
