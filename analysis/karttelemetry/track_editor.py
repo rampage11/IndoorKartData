@@ -14,6 +14,7 @@ Usage:
     C        — очистить всё (с подтверждением)
     S        — сохранить
     L        — замкнуть траекторию (добавить сегмент от последней к первой)
+    D        — переключить направление движения (ccw ↔ cw)
 
 При закрытии окна предлагается сохранить, если были несохранённые изменения.
 """
@@ -201,9 +202,21 @@ class TrackEditor:
     # ---- save ----
 
     def _save(self) -> None:
+        # Сохраняем предыдущие метаданные если они были — редактор их не меняет,
+        # пользователь редактирует в JSON напрямую (track_name, direction).
+        prev: dict = {}
+        if self.save_path.exists():
+            try:
+                prev = json.loads(self.save_path.read_text())
+            except Exception:  # noqa: BLE001
+                pass
         payload = {
+            "schema_version": 1,
+            "track_name": prev.get("track_name"),
             "image_path": self.image_path.name,
             "image_size_px": [self.img_w, self.img_h],
+            "direction": prev.get("direction"),         # "ccw" | "cw"
+            "trajectory_type": prev.get("trajectory_type", "racing_line"),
             "trajectory_px": [[round(x, 2), round(y, 2)] for (x, y) in self.trajectory],
             "trajectory_closed": True,
             "start_finish_px": [[round(x, 2), round(y, 2)] for (x, y) in self.start_finish],
