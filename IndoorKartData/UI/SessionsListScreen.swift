@@ -32,6 +32,18 @@ struct SessionsListScreen: View {
             .toolbar {
                 if !sessionsStore.items.isEmpty {
                     ToolbarItem(placement: .topBarTrailing) {
+                        ShareLink(
+                            item: AllSessionsArchive(rootURL: SessionStorage.shared.rootURL),
+                            preview: SharePreview(
+                                "Все сессии (\(sessionsStore.items.count))",
+                                image: Image(systemName: "doc.zipper")
+                            )
+                        ) {
+                            Image(systemName: "square.and.arrow.up.on.square")
+                        }
+                        .accessibilityLabel("Поделиться всеми сессиями")
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
                         Button(role: .destructive) {
                             showDeleteAllConfirmation = true
                         } label: {
