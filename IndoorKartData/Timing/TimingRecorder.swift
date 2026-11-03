@@ -24,6 +24,10 @@ final class TimingRecorder {
         // Дельта до карта позади нас на отсечке. nil если никого нет (мы последние)
         // или если преследователь ещё не пересёк финиш к моменту этого круга.
         let chaserGapMs: Int?
+        // Секторные времена из RaceMann, миллисекунды.
+        let s1Ms: Int?
+        let s2Ms: Int?
+        let s3Ms: Int?
     }
 
     struct PassRecord: Codable {
@@ -35,6 +39,9 @@ final class TimingRecorder {
         let bestLapMs: Int?
         let position: Int?
         let gapToLeaderMs: Int?
+        let s1Ms: Int?
+        let s2Ms: Int?
+        let s3Ms: Int?
     }
 
     struct Artifact: Codable {
@@ -83,7 +90,10 @@ final class TimingRecorder {
                         bestLapMs: ev.bestLapMs,
                         position: ev.position,
                         gapToLeaderMs: timing.gapToLeaderMs,
-                        chaserGapMs: nil   // проставим позже, когда преследователь пересечёт отсечку
+                        chaserGapMs: nil,   // проставим позже, когда преследователь пересечёт отсечку
+                        s1Ms: ev.s1Ms,
+                        s2Ms: ev.s2Ms,
+                        s3Ms: ev.s3Ms
                     ))
                 }
             }
@@ -104,7 +114,10 @@ final class TimingRecorder {
                         lastLapMs: ev.lastLapMs,
                         bestLapMs: ev.bestLapMs,
                         position: ev.position,
-                        gapToLeaderMs: ev.gapToLeaderMs
+                        gapToLeaderMs: ev.gapToLeaderMs,
+                        s1Ms: ev.s1Ms,
+                        s2Ms: ev.s2Ms,
+                        s3Ms: ev.s3Ms
                     ))
                 }
             }
@@ -124,7 +137,10 @@ final class TimingRecorder {
                         bestLapMs: last.bestLapMs,
                         position: last.position,
                         gapToLeaderMs: last.gapToLeaderMs,
-                        chaserGapMs: gap
+                        chaserGapMs: gap,
+                        s1Ms: last.s1Ms,
+                        s2Ms: last.s2Ms,
+                        s3Ms: last.s3Ms
                     )
                     self.laps[self.laps.count - 1] = last
                 }

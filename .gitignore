@@ -3,6 +3,11 @@
 .build/
 build/
 DerivedData/
+.claude/
+
+# Python
+__pycache__/
+*.pyc
 
 # Xcode user state
 xcuserdata/
@@ -23,3 +28,5 @@ Package.resolved
 # Отчёты по сессиям — GIF и большие PNG не коммитим
 analysis/reports/**/*.gif
 analysis/reports/**/*.mp4
+analysis/reports/**/*.csv
+analysis/reports/**/*.bin

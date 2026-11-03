@@ -30,6 +30,12 @@ struct SessionManifest: Codable {
     var kartNumber: Int?
     var timingRaceID: String?
     var trackName: String?
+    // Shake-sync: пик suspected shake, записанный пилотом перед выездом.
+    // v3 pipeline использует это для alignment между iPhone и Watch.
+    // iPhone-only запись → shakeSyncIphoneAtMs, если Watch тоже поймал пик
+    // (сообщает по WCSession) → shakeSyncWatchAtMs. Offset = watch - phone.
+    var shakeSyncIphoneAtMs: Int64?
+    var shakeSyncWatchAtMs: Int64?
 }
 
 enum SessionDirectoryName {

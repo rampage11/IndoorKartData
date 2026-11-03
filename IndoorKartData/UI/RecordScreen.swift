@@ -4,6 +4,9 @@ struct RecordScreen: View {
     @EnvironmentObject var recorder: RecordingController
     @EnvironmentObject var sessionsStore: SessionsStore
     @ObservedObject private var timing = TimingClient.shared
+    @ObservedObject private var katahub = KatahubClient.shared
+    @State private var stopHoldProgress: Double = 0
+    @State private var stopHoldTimer: Timer?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -14,6 +17,7 @@ struct RecordScreen: View {
             HStack(spacing: 12) {
                 watchStatusBadge
                 voiceToggleBadge
+                katahubBadge
             }
             .padding(.top, 12)
 
@@ -142,6 +146,45 @@ struct RecordScreen: View {
         .accessibilityLabel(recorder.voiceEnabled ? "Отключить голос" : "Включить голос")
     }
 
+    private var katahubBadge: some View {
+        let icon: String
+        let text: String
+        let color: Color
+        if katahub.isUploading {
+            icon = "icloud.and.arrow.up"
+            text = "katahub…"
+            color = .blue
+        } else if let r = katahub.lastResult, r.contains("загружено") {
+            icon = "checkmark.icloud"
+            text = "katahub"
+            color = .green
+        } else if let r = katahub.lastResult, !r.isEmpty {
+            // Прошлая загрузка упала — оранжевый несмотря на reachable.
+            icon = "exclamationmark.icloud"
+            text = "katahub"
+            color = .orange
+        } else if katahub.isReachable {
+            // Сервер отвечает на /healthz, но ещё не было загрузок.
+            icon = "checkmark.icloud"
+            text = "katahub"
+            color = .green
+        } else {
+            icon = "icloud.slash"
+            text = "katahub"
+            color = .secondary
+        }
+        return HStack(spacing: 6) {
+            Image(systemName: icon)
+            Text(text)
+        }
+        .font(.caption.weight(.medium))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(.ultraThinMaterial, in: Capsule())
+        .foregroundStyle(color)
+        .accessibilityLabel(katahub.lastResult ?? "katahub")
+    }
+
     private var watchStatusBadge: some View {
         HStack(spacing: 6) {
             Image(systemName: "applewatch")
@@ -156,26 +199,70 @@ struct RecordScreen: View {
     }
 
     private var recordButton: some View {
-        Button {
-            if recorder.isRecording {
-                recorder.stop()
-                sessionsStore.reload()
-            } else {
-                recorder.start()
-            }
-        } label: {
+        VStack(spacing: 12) {
             ZStack {
                 Circle()
                     .fill(recorder.isRecording ? Color.red : Color.green)
                     .frame(width: 220, height: 220)
                     .shadow(radius: 8, y: 4)
+                if recorder.isRecording && stopHoldProgress > 0 {
+                    Circle()
+                        .trim(from: 0, to: stopHoldProgress)
+                        .stroke(Color.white.opacity(0.8), style: StrokeStyle(lineWidth: 10, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                        .frame(width: 220, height: 220)
+                }
                 Text(recorder.isRecording ? "Стоп" : "Старт")
                     .font(.system(size: 44, weight: .bold))
                     .foregroundStyle(.white)
             }
+            .contentShape(Circle())
+            .onTapGesture {
+                if !recorder.isRecording {
+                    recorder.start()
+                }
+            }
+            .gesture(
+                recorder.isRecording ?
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { _ in startStopHold() }
+                        .onEnded { _ in cancelStopHold() }
+                    : nil
+            )
+            .accessibilityLabel(recorder.isRecording ? "Удерживайте, чтобы остановить запись" : "Начать запись")
+
+            if recorder.isRecording {
+                Text("Удерживайте 1 сек для остановки")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel(recorder.isRecording ? "Остановить запись" : "Начать запись")
+    }
+
+    private func startStopHold() {
+        guard stopHoldTimer == nil else { return }
+        let step = 0.05
+        let total = 1.0
+        stopHoldTimer = Timer.scheduledTimer(withTimeInterval: step, repeats: true) { timer in
+            Task { @MainActor in
+                stopHoldProgress = min(1.0, stopHoldProgress + step / total)
+                if stopHoldProgress >= 1.0 {
+                    timer.invalidate()
+                    stopHoldTimer = nil
+                    stopHoldProgress = 0
+                    recorder.stop()
+                    sessionsStore.reload()
+                }
+            }
+        }
+    }
+
+    private func cancelStopHold() {
+        stopHoldTimer?.invalidate()
+        stopHoldTimer = nil
+        withAnimation(.easeOut(duration: 0.2)) {
+            stopHoldProgress = 0
+        }
     }
 
     private func errorBanner(_ text: String) -> some View {

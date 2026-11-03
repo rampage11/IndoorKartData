@@ -37,6 +37,9 @@ protocol WatchConnectionDelegate: AnyObject {
     // Любое входящее сообщение (включая heartbeat). Используется для
     // last-heard-from индикатора, не привязанного к flaky isReachable.
     @MainActor func watchConnectionDidReceiveAnyMessage(_ connection: WatchConnection)
+    // Входящий бинарный батч raw watch IMU (Wave 2 live-compare). iPhone
+    // форвардит его на katahub-бэкенд через отдельный WS.
+    @MainActor func watchConnection(_ connection: WatchConnection, didReceiveImuBatch data: Data)
 }
 
 extension WatchConnectionDelegate {
@@ -48,6 +51,7 @@ extension WatchConnectionDelegate {
     @MainActor func watchConnection(_ connection: WatchConnection, lastLapReceivedMs ms: Int) {}
     @MainActor func watchConnection(_ connection: WatchConnection, kartNumberChanged number: Int) {}
     @MainActor func watchConnectionDidReceiveAnyMessage(_ connection: WatchConnection) {}
+    @MainActor func watchConnection(_ connection: WatchConnection, didReceiveImuBatch data: Data) {}
 }
 
 final class WatchConnection: NSObject {
@@ -115,7 +119,17 @@ final class WatchConnection: NSObject {
             WatchMessageKey.command: WatchCommand.stop,
             WatchMessageKey.sessionID: sessionID.uuidString
         ]
-        return send(payload: payload, reply: reply)
+        // Критичная команда — дублируем через оба канала (см. sendWatchStop).
+        guard let session, session.activationState == .activated else {
+            reply?(false, "WCSession не активна")
+            return false
+        }
+        session.transferUserInfo(payload)
+        if session.isReachable {
+            session.sendMessage(payload, replyHandler: nil, errorHandler: nil)
+        }
+        reply?(true, nil)
+        return true
     }
 
     @discardableResult
@@ -134,7 +148,19 @@ final class WatchConnection: NSObject {
             WatchMessageKey.command: WatchCommand.watchStop,
             WatchMessageKey.sessionID: sessionID.uuidString
         ]
-        return send(payload: payload, reply: nil)
+        // Критичная команда — отправляем ОБОИМИ путями одновременно.
+        // sendMessage быстрый (мгновенно если iPhone в foreground), но когда
+        // iPhone backgrounded — iOS считает что доставила, а приложение
+        // обработает только при next wake, задержка 10-30с.
+        // transferUserInfo гарантирован, может быть немного медленнее при
+        // foreground, но доставит даже в suspended состоянии через 1-2с.
+        // iPhone-сторона идемпотентна — дубликат stop = no-op.
+        guard let session, session.activationState == .activated else { return false }
+        session.transferUserInfo(payload)
+        if session.isReachable {
+            session.sendMessage(payload, replyHandler: nil, errorHandler: nil)
+        }
+        return true
     }
 
     // Живой стрим: raw attitude.yaw + текущая rotationRate.y (для детектора
@@ -210,6 +236,16 @@ final class WatchConnection: NSObject {
         ]
         session.transferFile(url, metadata: metadata)
     }
+
+    // Watch → iPhone: 1-секундный батч raw IMU в бинарном формате
+    // WatchIMUBatchFormat. Используется sendMessageData (не JSON) чтобы
+    // не раздувать трафик base64-кодированием. Батч шлётся только когда
+    // iPhone reachable; дропнутые батчи не ретраятся — живой стрим это
+    // advisory, authoritative остаётся watch_imu.bin.
+    func sendImuBatch(_ data: Data) {
+        guard let session, session.activationState == .activated, session.isReachable else { return }
+        session.sendMessageData(data, replyHandler: nil, errorHandler: nil)
+    }
 }
 
 extension WatchConnection: WCSessionDelegate {
@@ -244,6 +280,25 @@ extension WatchConnection: WCSessionDelegate {
 
     nonisolated func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
         handleIncoming(userInfo, replyHandler: nil)
+    }
+
+    // Бинарные данные: только Wave-2 raw IMU батчи с часов. Любой приём
+    // обновляет last-heard-from (как и обычные сообщения).
+    nonisolated func session(_ session: WCSession, didReceiveMessageData messageData: Data) {
+        let data = messageData
+        Task { @MainActor in
+            self.delegate?.watchConnectionDidReceiveAnyMessage(self)
+            self.delegate?.watchConnection(self, didReceiveImuBatch: data)
+        }
+    }
+
+    nonisolated func session(_ session: WCSession, didReceiveMessageData messageData: Data, replyHandler: @escaping (Data) -> Void) {
+        let data = messageData
+        Task { @MainActor in
+            self.delegate?.watchConnectionDidReceiveAnyMessage(self)
+            self.delegate?.watchConnection(self, didReceiveImuBatch: data)
+        }
+        replyHandler(Data())
     }
 
     nonisolated func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {

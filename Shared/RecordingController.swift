@@ -122,11 +122,61 @@ final class RecordingController: ObservableObject {
     // onWatchSteeringSample ниже — там детектор по watchGyroY.
     private nonisolated func processIphoneLiveSample(_ motion: CMDeviceMotion) {
         let yaw = motion.attitude.yaw
+        // Телеметрия для live-стрима: горизонтальные ускорения, yaw и yaw rate.
+        // Классификация фазы и slip делается здесь по одному сэмплу (не по
+        // сглаженному окну) — пусть dashboard видит реактивную картину.
+        // Проектировали в v2 spec, Algorithm 4: brake < -0.25g, lift
+        // (-0.25g,-0.08g), accel > 0.20g, else cruise.
+        let ux = motion.userAcceleration.x
+        let uy = motion.userAcceleration.y
+        let aLat = ux
+        let aLong = uy
+        let ah = (ux * ux + uy * uy).squareRoot()
+        let wz = motion.rotationRate.z
+        let yawRateDegS = wz * 180 / .pi
+
+        let phase: String
+        if aLong < -0.25 { phase = "brake" }
+        else if aLong < -0.08 { phase = "lift" }
+        else if aLong > 0.20 { phase = "accel" }
+        else { phase = "cruise" }
+
+        // Simplified slip detector (Algorithm 5): wz_exp = a_lat·g/v. У нас
+        // нет v online, используем крайне крубую норм. На realtime это
+        // триггерит ложные срабатывания, но для dashboard-а показательно.
+        let wzExp = aLat * 9.81 / max(5.0, ah * 9.81 + 1.0)
+        let excess = abs(wz) - abs(wzExp)
+        let slipStrength: Double? = (excess > 0.28 && sign(wz) == sign(aLat)) ? excess : nil
+
         Task { @MainActor in
             self.latestIphoneYaw = yaw
             self.recomputeSteering()
+            self.liveTelemetryLatest = LiveTelemetrySnapshot(
+                aLong: aLong, aLat: aLat, ah: ah, yawRateDeg: yawRateDegS,
+                yawRad: yaw, phase: phase, slipStrength: slipStrength
+            )
         }
     }
+
+    private nonisolated func sign(_ x: Double) -> Double {
+        x > 0 ? 1 : (x < 0 ? -1 : 0)
+    }
+
+    struct LiveTelemetrySnapshot {
+        let aLong: Double
+        let aLat: Double
+        let ah: Double
+        let yawRateDeg: Double
+        let yawRad: Double
+        let phase: String
+        let slipStrength: Double?
+    }
+    private var liveTelemetryLatest: LiveTelemetrySnapshot?
+    private var liveStreamTimer: Timer?
+    // Шейк-синк: Watch сообщает свой startedAt через WatchConnection.sendStart.
+    // Если iPhone запустил сессию, pendingWatchStartMs остаётся nil (нет Watch
+    // стартующего мессаджа), иначе выставляется в didReceiveStart.
+    private var pendingWatchStartMs: Int64?
 
     private func onWatchSteeringSample(watchYaw: Double, wristRateY: Double) {
         latestWatchYaw = watchYaw
@@ -183,6 +233,21 @@ final class RecordingController: ObservableObject {
                     if self.voiceEnabled {
                         self.voiceAnnouncer.announceLap(ms: ms)
                     }
+                    // Wave 2: публикуем событие нового круга на katahub.
+                    // Backend слушает это → слайс IMU-буфера → compare.
+                    let lapNumber = TimingClient.shared.lapCount ?? 0
+                    var payload: [String: Any] = [
+                        "lapNumber": lapNumber,
+                        "lapMs": ms,
+                        "wallTime": ISO8601DateFormatter().string(from: Date()),
+                    ]
+                    if let pos = TimingClient.shared.position {
+                        payload["position"] = pos
+                    }
+                    if let gap = TimingClient.shared.chaserGapMs {
+                        payload["chaserGapMs"] = gap
+                    }
+                    KatahubLiveStream.shared.publishEvent(kind: "timing.lap", payload: payload)
                 }
             }
         // Дельта до преследователя приходит через несколько секунд после
@@ -316,10 +381,35 @@ final class RecordingController: ObservableObject {
         self.watchIMUSampleCount = nil
         self.heartRateSampleCount = nil
 
+        // Live stream: только если katahub auto-upload включён. Нет смысла
+        // пускать WS если юзер уже отключил бэкенд.
+        if KatahubClient.shared.autoUpload {
+            KatahubLiveStream.shared.start(sessionID: id, hostURL: KatahubClient.shared.hostURL)
+            liveStreamTimer?.invalidate()
+            // 10 Гц дают приятный trail на dashboard: ~6МБ/час при WS idle,
+            // в пределах разумного даже на EDGE/3G.
+            liveStreamTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self, self.isRecording, let snap = self.liveTelemetryLatest else { return }
+                    KatahubLiveStream.shared.publishTelemetry(
+                        aLong: snap.aLong, aLat: snap.aLat, ah: snap.ah,
+                        yawRateDeg: snap.yawRateDeg,
+                        yawRad: snap.yawRad,
+                        phase: snap.phase,
+                        slipStrength: snap.slipStrength,
+                        lap: TimingClient.shared.lapCount
+                    )
+                }
+            }
+        }
+
         // Поднимаем SignalR-соединение к RaceMann если номер карта задан,
         // и запускаем сбор timing-ивентов в session dir.
         timingRecorder.start(sessionURL: sessionURL)
         if kartNumber > 0 {
+            // Переводим TimingClient в "активный" режим ДО connect() чтобы
+            // watchdog поднялся сразу после установления WS.
+            TimingClient.shared.setSessionActive(true)
             Task { await TimingClient.shared.connect() }
         }
         UIApplication.shared.isIdleTimerDisabled = true
@@ -341,6 +431,9 @@ final class RecordingController: ObservableObject {
     private func stopIOS(notifyWatch: Bool) async {
         timer?.invalidate()
         timer = nil
+        liveStreamTimer?.invalidate()
+        liveStreamTimer = nil
+        KatahubLiveStream.shared.stop()
 
         let sessionID = currentSessionID
         if notifyWatch, let sessionID {
@@ -375,11 +468,22 @@ final class RecordingController: ObservableObject {
 
         UIApplication.shared.isIdleTimerDisabled = false
         isRecording = false
+        let finishedURL = sessionURL
         startedAt = nil
         sessionURL = nil
 
         // Отключаемся от RaceMann чтобы не держать WS впустую между заездами.
+        TimingClient.shared.setSessionActive(false)
         TimingClient.shared.disconnect()
+
+        // Фоновая выгрузка на katahub (idempotent — повторный upload UPSERT-ит
+        // по UUID). Если позже дойдут файлы часов, mergeIncomingWatchFile
+        // отправит сессию ещё раз.
+        if let finishedURL {
+            Task { @MainActor in
+                await KatahubClient.shared.uploadSession(at: finishedURL)
+            }
+        }
     }
 
     private func writeManifest(
@@ -418,6 +522,15 @@ final class RecordingController: ObservableObject {
         // всегда сканируем реальную директорию, чтобы manifest не отставал.
         appendWatchSourcesFromDisk(to: &sources, sessionURL: sessionURL)
 
+        // Shake-sync baseline: пока без детекции пика, просто фиксируем
+        // startedAt как референс для обоих устройств. При рукопожатии Watch
+        // шлёт свой startedAt через sendStart; если он совпадает с нашим —
+        // устройства стартовали синхронно по WC. Расхождение в парах
+        // (iPhone, Watch) = полная WCSession-latency, обычно 50-500мс.
+        // Peak-detection детекция (v3 Calibration SM) — следующая итерация.
+        let iphoneMs = Int64(startedAt.timeIntervalSince1970 * 1000)
+        let watchMs = pendingWatchStartMs
+
         let manifest = SessionManifest(
             id: id,
             startedAt: startedAt,
@@ -429,7 +542,9 @@ final class RecordingController: ObservableObject {
             driverId: Self.persistentDriverID,
             kartNumber: kartNumber > 0 ? kartNumber : nil,
             timingRaceID: TimingClient.shared.currentRaceID,
-            trackName: nil  // UI выбора трека появится позже; пока nil
+            trackName: nil,  // UI выбора трека появится позже; пока nil
+            shakeSyncIphoneAtMs: iphoneMs,
+            shakeSyncWatchAtMs: watchMs
         )
 
         do {
@@ -536,6 +651,10 @@ final class RecordingController: ObservableObject {
         appendWatchSourcesFromDisk(to: &manifest.sources, sessionURL: dir)
         do {
             try SessionStorage.shared.writeManifest(manifest, sessionURL: dir)
+            // Поздно прилетевшие файлы часов → перезаливаем на katahub.
+            Task { @MainActor in
+                await KatahubClient.shared.uploadSession(at: dir)
+            }
         } catch {
             self.lastError = "Не удалось обновить manifest: \(error.localizedDescription)"
         }
@@ -567,6 +686,7 @@ extension RecordingController: WatchConnectionDelegate {
     func watchConnection(_ connection: WatchConnection, didReceiveStart sessionID: UUID, startedAt: Date) {
         guard !isRecording else { return }
         Task { @MainActor in
+            self.pendingWatchStartMs = Int64(startedAt.timeIntervalSince1970 * 1000)
             await self.startIOS(externalSessionID: sessionID, externalStart: startedAt)
         }
     }
@@ -626,6 +746,12 @@ extension RecordingController: WatchConnectionDelegate {
         if self.kartNumber != number {
             self.kartNumber = number
         }
+    }
+
+    func watchConnection(_ connection: WatchConnection, didReceiveImuBatch data: Data) {
+        // Wave 2: форвардим raw IMU батч на katahub-бэкенд. Если live-стрим
+        // не запущен (пилот выключил auto-upload) — молча дропаем.
+        KatahubLiveStream.shared.publishWatchImuBatch(data)
     }
 }
 #endif

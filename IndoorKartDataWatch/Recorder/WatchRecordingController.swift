@@ -199,6 +199,11 @@ final class WatchRecordingController: NSObject, ObservableObject {
         imuRecorder.onLiveSample = { [weak self] motion in
             self?.processLiveSample(motion)
         }
+        // Wave 2: 1-секундные батчи raw IMU идут на iPhone, он форвардит
+        // на katahub. Шлём через binary-канал (sendMessageData) без JSON.
+        imuRecorder.onBatchReady = { data in
+            WatchConnection.shared.sendImuBatch(data)
+        }
 
         try hrRecorder.start(sessionDirectory: directory, startDate: now)
         try imuRecorder.start(sessionDirectory: directory)
@@ -248,6 +253,7 @@ final class WatchRecordingController: NSObject, ObservableObject {
         let endDate = Date()
 
         imuRecorder.onLiveSample = nil
+        imuRecorder.onBatchReady = nil
         imuRecorder.stop()
         hrRecorder.stop()
         // Сброс колеса в ноль на телефоне — опционально.
